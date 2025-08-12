@@ -1,0 +1,25 @@
+# deps
+node_modules/
+
+# builds
+dist/
+coverage/
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+*.log
+
+# env (nunca commitar segredos)
+.env
+.env.*
+!.env.example
+
+# editor
+.vscode/
+.idea/
+.DS_Store
+
+# prisma
+# (NÃO ignore prisma/migrations)

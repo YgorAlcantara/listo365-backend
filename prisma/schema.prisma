@@ -1,0 +1,83 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String
+  role      String   @default("ADMIN")
+  createdAt DateTime @default(now())
+}
+
+model Product {
+  id          String    @id @default(cuid())
+  name        String
+  slug        String    @unique
+  description String
+  price       Decimal   @db.Decimal(12, 2)   // <-- aqui
+  imageUrl    String
+  active      Boolean   @default(true)
+  stock       Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  categories  ProductCategory[]
+  promotions  Promotion[]
+  orderItems  OrderItem[]               // <-- adicionamos o “lado oposto” da relação
+}
+
+model Category {
+  id       String @id @default(cuid())
+  name     String
+  slug     String @unique
+  products ProductCategory[]
+}
+
+model ProductCategory {
+  product    Product  @relation(fields: [productId], references: [id])
+  productId  String
+  category   Category @relation(fields: [categoryId], references: [id])
+  categoryId String
+  @@id([productId, categoryId])
+}
+
+model Promotion {
+  id          String   @id @default(cuid())
+  product     Product  @relation(fields: [productId], references: [id])
+  productId   String
+  title       String
+  description String?
+  percentOff  Int?
+  priceOff    Decimal? @db.Decimal(12, 2)   // <-- aqui
+  startsAt    DateTime
+  endsAt      DateTime
+  active      Boolean  @default(true)
+}
+
+model OrderInquiry {
+  id            String      @id @default(cuid())
+  customerName  String
+  customerEmail String
+  customerPhone String?
+  note          String?
+  items         OrderItem[]
+  status        String      @default("RECEIVED")
+  createdAt     DateTime    @default(now())
+}
+
+model OrderItem {
+  id         String       @id @default(cuid())
+  order      OrderInquiry @relation(fields: [orderId], references: [id])
+  orderId    String
+  product    Product      @relation(fields: [productId], references: [id])
+  productId  String
+  quantity   Int
+  unitPrice  Decimal      @db.Decimal(12, 2)   // <-- aqui
+}
