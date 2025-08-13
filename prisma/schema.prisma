@@ -7,6 +7,9 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/* =========================
+   AUTH / USERS
+   ========================= */
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
@@ -16,29 +19,26 @@ model User {
   createdAt DateTime @default(now())
 }
 
-model Product {
-  id          String    @id @default(cuid())
-  name        String
-  slug        String    @unique
-  description String
-  price       Decimal   @db.Decimal(12, 2)   // <-- aqui
-  imageUrl    String
-  active      Boolean   @default(true)
-  stock       Int       @default(0)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  sortOrder   Int       @default(0)
+/* =========================
+   CATALOG
+   ========================= */
 
-  categories  ProductCategory[]
-  promotions  Promotion[]
-  orderItems  OrderItem[]               // <-- adicionamos o “lado oposto” da relação
-}
-
+/** Categoria com hierarquia:
+  - Top level: ex. "Floor Care", "Bathroom Cleaners"...
+  - Subcategoria: usa parentId apontando para a categoria pai
+*/
 model Category {
-  id       String @id @default(cuid())
-  name     String
-  slug     String @unique
-  products ProductCategory[]
+  id        String     @id @default(cuid())
+  name      String
+  slug      String     @unique
+  parent    Category?  @relation("CategoryToCategory", fields: [parentId], references: [id])
+  parentId  String?
+  children  Category[] @relation("CategoryToCategory")
+
+  // relação n:n com Product (via pivot)
+  products  ProductCategory[]
+
+  @@index([parentId])
 }
 
 model ProductCategory {
@@ -46,9 +46,50 @@ model ProductCategory {
   productId  String
   category   Category @relation(fields: [categoryId], references: [id])
   categoryId String
+
   @@id([productId, categoryId])
 }
 
+/** Imagens extras por produto (a 1ª serve de capa) */
+model ProductImage {
+  id        String  @id @default(cuid())
+  product   Product @relation(fields: [productId], references: [id])
+  productId String
+  url       String
+  sortOrder Int     @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([productId])
+  @@index([sortOrder])
+}
+
+model Product {
+  id          String    @id @default(cuid())
+  name        String
+  slug        String    @unique
+  description String
+  price       Decimal   @db.Decimal(12, 2)
+  imageUrl    String    // legado: mantido como fallback (primeira imagem agora vem de ProductImage)
+  active      Boolean   @default(true)
+  stock       Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  sortOrder   Int       @default(0)
+
+  /* NOVOS CAMPOS */
+  packageSize String?   // ex.: "1 gal", "32 oz"
+  pdfUrl      String?   // pdf (1 página) do produto
+
+  // relações
+  categories  ProductCategory[]
+  promotions  Promotion[]
+  orderItems  OrderItem[]
+  images      ProductImage[]
+}
+
+/* =========================
+   PROMOTIONS
+   ========================= */
 model Promotion {
   id          String   @id @default(cuid())
   product     Product  @relation(fields: [productId], references: [id])
@@ -56,12 +97,15 @@ model Promotion {
   title       String
   description String?
   percentOff  Int?
-  priceOff    Decimal? @db.Decimal(12, 2)   // <-- aqui
+  priceOff    Decimal? @db.Decimal(12, 2)
   startsAt    DateTime
   endsAt      DateTime
   active      Boolean  @default(true)
 }
 
+/* =========================
+   ORDER / INQUIRY
+   ========================= */
 model OrderInquiry {
   id            String      @id @default(cuid())
   customerName  String
@@ -80,5 +124,5 @@ model OrderItem {
   product    Product      @relation(fields: [productId], references: [id])
   productId  String
   quantity   Int
-  unitPrice  Decimal      @db.Decimal(12, 2)   // <-- aqui
+  unitPrice  Decimal      @db.Decimal(12, 2)
 }
