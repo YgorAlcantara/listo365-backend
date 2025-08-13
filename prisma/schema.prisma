@@ -2,10 +2,61 @@ generator client {
   provider = "prisma-client-js"
 }
 
-datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-}
+
+Search
+
+Live tail
+GMT-3
+
+Menu
+
+==> It looks like we don't have access to your repo, but we'll try to clone it anyway.
+==> Cloning from https://github.com/YgorAlcantara/listo365-backend
+==> Checking out commit 4de4d77a978c910609a86c5ecb73e2b7865e33a5 in branch main
+==> Using Node.js version 22.16.0 (default)
+==> Docs on specifying a Node.js version: https://render.com/docs/node-version
+==> Running build command 'npm ci && npx prisma generate && npm run build'...
+added 295 packages, and audited 296 packages in 9s
+37 packages are looking for funding
+  run `npm fund` for details
+found 0 vulnerabilities
+Prisma schema loaded from prisma/schema.prisma
+┌─────────────────────────────────────────────────────────┐
+│  Update available 6.13.0 -> 6.14.0                      │
+│  Run the following to update                            │
+│    npm i --save-dev prisma@latest                       │
+│    npm i @prisma/client@latest                          │
+✔ Generated Prisma Client (v6.13.0) to ./node_modules/@prisma/client in 92ms
+Start by importing your Prisma Client (See: https://pris.ly/d/importing-client)
+Tip: Want to turn off tips and other hints? https://pris.ly/tip-4-nohints
+└─────────────────────────────────────────────────────────┘
+> listo365-backend@1.0.0 build
+> tsc -p tsconfig.json
+==> Uploading build...
+==> Uploaded in 6.3s. Compression took 1.7s
+==> Build successful 🎉
+==> Deploying...
+==> Running 'npx prisma migrate resolve --rolled-back 20250813_catalog_struct || true && npx prisma migrate deploy && node dist/src/server.js'
+Prisma schema loaded from prisma/schema.prisma
+Datasource "db": PostgreSQL database "neondb", schema "public" at "ep-rapid-cherry-aehn6tjv-pooler.c-2.us-east-2.aws.neon.tech"
+Error: P1002
+The database server was reached but timed out.
+Please try again.
+Please make sure your database server is running at the configured address.
+Context: Timed out trying to acquire a postgres advisory lock (SELECT pg_advisory_lock(72707369)). Timeout: 10000ms. See https://pris.ly/d/migrate-advisory-locking for details.
+==> No open ports detected, continuing to scan...
+==> Docs on specifying a port: https://render.com/docs/web-services#port-binding
+Prisma schema loaded from prisma/schema.prisma
+Datasource "db": PostgreSQL database "neondb", schema "public" at "ep-rapid-cherry-aehn6tjv-pooler.c-2.us-east-2.aws.neon.tech"
+3 migrations found in prisma/migrations
+Error: P1002
+The database server was reached but timed out.
+Please try again.
+Please make sure your database server is running at the configured address.
+Context: Timed out trying to acquire a postgres advisory lock (SELECT pg_advisory_lock(72707369)). Timeout: 10000ms. See https://pris.ly/d/migrate-advisory-locking for details.
+==> Exited with status 1
+==> Common ways to troubleshoot your deploy: https://render.com/docs/troubleshooting-deploys
+==> Running 'npx prisma migrate resolve --rolled-back 20250813_catalog_struct || true && npx prisma migrate deploy && node dist/src/server.js'
 
 /* =========================
    AUTH / USERS
