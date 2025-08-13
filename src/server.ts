@@ -7,6 +7,10 @@ import { auth } from './routes/auth';
 import { products } from './routes/products';
 import { orders } from './routes/orders';
 import { promotions } from './routes/promotions';
+import { categories } from './routes/categories';
+
+
+
 
 const app = express();
 
@@ -47,3 +51,5 @@ app.use('/promotions', promotions);
 // ---- Start ----
 const port = Number(process.env.PORT || 4000);
 app.listen(port, () => console.log(`API on :${port}`));
+
+app.use('/categories', categories);

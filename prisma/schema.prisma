@@ -2,65 +2,12 @@ generator client {
   provider = "prisma-client-js"
 }
 
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL") // runtime (pooler)
+  directUrl = env("DIRECT_URL") // migrations (sem pooler)
+}
 
-Search
-
-Live tail
-GMT-3
-
-Menu
-
-==> It looks like we don't have access to your repo, but we'll try to clone it anyway.
-==> Cloning from https://github.com/YgorAlcantara/listo365-backend
-==> Checking out commit 4de4d77a978c910609a86c5ecb73e2b7865e33a5 in branch main
-==> Using Node.js version 22.16.0 (default)
-==> Docs on specifying a Node.js version: https://render.com/docs/node-version
-==> Running build command 'npm ci && npx prisma generate && npm run build'...
-added 295 packages, and audited 296 packages in 9s
-37 packages are looking for funding
-  run `npm fund` for details
-found 0 vulnerabilities
-Prisma schema loaded from prisma/schema.prisma
-┌─────────────────────────────────────────────────────────┐
-│  Update available 6.13.0 -> 6.14.0                      │
-│  Run the following to update                            │
-│    npm i --save-dev prisma@latest                       │
-│    npm i @prisma/client@latest                          │
-✔ Generated Prisma Client (v6.13.0) to ./node_modules/@prisma/client in 92ms
-Start by importing your Prisma Client (See: https://pris.ly/d/importing-client)
-Tip: Want to turn off tips and other hints? https://pris.ly/tip-4-nohints
-└─────────────────────────────────────────────────────────┘
-> listo365-backend@1.0.0 build
-> tsc -p tsconfig.json
-==> Uploading build...
-==> Uploaded in 6.3s. Compression took 1.7s
-==> Build successful 🎉
-==> Deploying...
-==> Running 'npx prisma migrate resolve --rolled-back 20250813_catalog_struct || true && npx prisma migrate deploy && node dist/src/server.js'
-Prisma schema loaded from prisma/schema.prisma
-Datasource "db": PostgreSQL database "neondb", schema "public" at "ep-rapid-cherry-aehn6tjv-pooler.c-2.us-east-2.aws.neon.tech"
-Error: P1002
-The database server was reached but timed out.
-Please try again.
-Please make sure your database server is running at the configured address.
-Context: Timed out trying to acquire a postgres advisory lock (SELECT pg_advisory_lock(72707369)). Timeout: 10000ms. See https://pris.ly/d/migrate-advisory-locking for details.
-==> No open ports detected, continuing to scan...
-==> Docs on specifying a port: https://render.com/docs/web-services#port-binding
-Prisma schema loaded from prisma/schema.prisma
-Datasource "db": PostgreSQL database "neondb", schema "public" at "ep-rapid-cherry-aehn6tjv-pooler.c-2.us-east-2.aws.neon.tech"
-3 migrations found in prisma/migrations
-Error: P1002
-The database server was reached but timed out.
-Please try again.
-Please make sure your database server is running at the configured address.
-Context: Timed out trying to acquire a postgres advisory lock (SELECT pg_advisory_lock(72707369)). Timeout: 10000ms. See https://pris.ly/d/migrate-advisory-locking for details.
-==> Exited with status 1
-==> Common ways to troubleshoot your deploy: https://render.com/docs/troubleshooting-deploys
-==> Running 'npx prisma migrate resolve --rolled-back 20250813_catalog_struct || true && npx prisma migrate deploy && node dist/src/server.js'
-
-/* =========================
-   AUTH / USERS
-   ========================= */
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
@@ -70,24 +17,14 @@ model User {
   createdAt DateTime @default(now())
 }
 
-/* =========================
-   CATALOG
-   ========================= */
-
-/** Categoria com hierarquia:
-  - Top level: ex. "Floor Care", "Bathroom Cleaners"...
-  - Subcategoria: usa parentId apontando para a categoria pai
-*/
 model Category {
-  id        String     @id @default(cuid())
-  name      String
-  slug      String     @unique
-  parent    Category?  @relation("CategoryToCategory", fields: [parentId], references: [id])
-  parentId  String?
-  children  Category[] @relation("CategoryToCategory")
-
-  // relação n:n com Product (via pivot)
-  products  ProductCategory[]
+  id       String            @id @default(cuid())
+  name     String
+  slug     String            @unique
+  parent   Category?         @relation("CategoryToCategory", fields: [parentId], references: [id])
+  parentId String?
+  children Category[]        @relation("CategoryToCategory")
+  products ProductCategory[]
 
   @@index([parentId])
 }
@@ -101,13 +38,12 @@ model ProductCategory {
   @@id([productId, categoryId])
 }
 
-/** Imagens extras por produto (a 1ª serve de capa) */
 model ProductImage {
-  id        String  @id @default(cuid())
-  product   Product @relation(fields: [productId], references: [id])
+  id        String   @id @default(cuid())
+  product   Product  @relation(fields: [productId], references: [id])
   productId String
   url       String
-  sortOrder Int     @default(0)
+  sortOrder Int      @default(0)
   createdAt DateTime @default(now())
 
   @@index([productId])
@@ -115,32 +51,27 @@ model ProductImage {
 }
 
 model Product {
-  id          String    @id @default(cuid())
+  id          String   @id @default(cuid())
   name        String
-  slug        String    @unique
+  slug        String   @unique
   description String
-  price       Decimal   @db.Decimal(12, 2)
-  imageUrl    String    // legado: mantido como fallback (primeira imagem agora vem de ProductImage)
-  active      Boolean   @default(true)
-  stock       Int       @default(0)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  sortOrder   Int       @default(0)
+  price       Decimal  @db.Decimal(12, 2)
+  imageUrl    String // fallback legado
+  active      Boolean  @default(true)
+  stock       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  sortOrder   Int      @default(0)
 
-  /* NOVOS CAMPOS */
-  packageSize String?   // ex.: "1 gal", "32 oz"
-  pdfUrl      String?   // pdf (1 página) do produto
+  packageSize String?
+  pdfUrl      String?
 
-  // relações
-  categories  ProductCategory[]
-  promotions  Promotion[]
-  orderItems  OrderItem[]
-  images      ProductImage[]
+  categories ProductCategory[]
+  promotions Promotion[]
+  orderItems OrderItem[]
+  images     ProductImage[]
 }
 
-/* =========================
-   PROMOTIONS
-   ========================= */
 model Promotion {
   id          String   @id @default(cuid())
   product     Product  @relation(fields: [productId], references: [id])
@@ -154,9 +85,6 @@ model Promotion {
   active      Boolean  @default(true)
 }
 
-/* =========================
-   ORDER / INQUIRY
-   ========================= */
 model OrderInquiry {
   id            String      @id @default(cuid())
   customerName  String
@@ -169,11 +97,11 @@ model OrderInquiry {
 }
 
 model OrderItem {
-  id         String       @id @default(cuid())
-  order      OrderInquiry @relation(fields: [orderId], references: [id])
-  orderId    String
-  product    Product      @relation(fields: [productId], references: [id])
-  productId  String
-  quantity   Int
-  unitPrice  Decimal      @db.Decimal(12, 2)
+  id        String       @id @default(cuid())
+  order     OrderInquiry @relation(fields: [orderId], references: [id])
+  orderId   String
+  product   Product      @relation(fields: [productId], references: [id])
+  productId String
+  quantity  Int
+  unitPrice Decimal      @db.Decimal(12, 2)
 }
