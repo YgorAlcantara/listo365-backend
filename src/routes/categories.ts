@@ -1,50 +1,57 @@
 import { Router } from 'express';
 import { prisma } from '../lib/prisma';
+import { z } from 'zod';
 import { requireAdmin } from '../middleware/auth';
 
 export const categories = Router();
 
-/** GET /categories -> lista hierárquica (pai + filhos) */
+function slugify(s: string) {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+}
+
+// Lista pais com filhos
 categories.get('/', async (_req, res) => {
-  const parents = await prisma.category.findMany({
+  const roots = await prisma.category.findMany({
     where: { parentId: null },
     orderBy: { name: 'asc' },
     include: { children: { orderBy: { name: 'asc' } } },
   });
-  res.json(parents);
+  res.json(roots);
 });
 
-/** POST /categories/seed  (rodar 1x) */
+// Seed da árvore “default” (uma vez)
 categories.post('/seed', requireAdmin, async (_req, res) => {
-  function slugify(s: string) {
-    return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+  const tree: Array<{ name: string; children?: string[] }> = [
+    { name: 'Floor Care', children: ['Floor Finishes', 'Floor Strippers', 'Neutral & Specialty Cleaners'] },
+    { name: 'Bathroom Cleaners', children: ['Acid Bathroom Cleaners', 'Non-Acid Bathroom & Bowl Cleaners'] },
+    { name: 'Glass Cleaners', children: ['Ready-To-Use on Glass'] },
+    { name: 'Carpet Care', children: ['Pre-Treatment'] },
+    { name: 'Cleaners/Degreasers', children: ['Super Heavy Duty Concentrate'] },
+  ];
+
+  for (const parent of tree) {
+    const p = await prisma.category.upsert({
+      where: { slug: slugify(parent.name) },
+      create: { name: parent.name, slug: slugify(parent.name) },
+      update: {},
+    });
+    for (const childName of parent.children ?? []) {
+      await prisma.category.upsert({
+        where: { slug: slugify(childName) },
+        create: { name: childName, slug: slugify(childName), parentId: p.id },
+        update: { parentId: p.id },
+      });
+    }
   }
-
-  const ensure = async (name: string, parentId: string | null) => {
-    const slug = slugify(name);
-    const found = await prisma.category.findFirst({ where: { slug } });
-    if (found) return found;
-    return prisma.category.create({ data: { name, slug, parentId } });
-  };
-
-  // Pai + filhos conforme você pediu
-  const floor = await ensure('Floor Care', null);
-  await ensure('Floor Finishes', floor.id);
-  await ensure('Floor Strippers', floor.id);
-  await ensure('Neutral & Specialty Cleaners', floor.id);
-
-  const bath = await ensure('Bathroom Cleaners', null);
-  await ensure('Acid Bathroom Cleaners', bath.id);
-  await ensure('Non-Acid Bathroom & Bowl Cleaners', bath.id);
-
-  const glass = await ensure('Glass Cleaners', null);
-  await ensure('Ready-To-Use on Glass', glass.id);
-
-  const carpet = await ensure('Carpet Care', null);
-  await ensure('Pre-Treatment', carpet.id);
-
-  const deg = await ensure('Cleaners/Degreasers', null);
-  await ensure('Super Heavy Duty Concentrate', deg.id);
-
   res.json({ ok: true });
+});
+
+// Criar categoria (parent ou sub) inline pelo Admin
+categories.post('/', requireAdmin, async (req, res) => {
+  const body = z.object({ name: z.string().min(2), parentId: z.string().optional() }).parse(req.body);
+  const created = await prisma.category.create({
+    data: { name: body.name, slug: slugify(body.name), parentId: body.parentId || null },
+    include: { children: true, parent: true },
+  });
+  res.status(201).json(created);
 });
