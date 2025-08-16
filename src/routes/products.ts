@@ -5,6 +5,8 @@ import jwt from "jsonwebtoken";
 import { requireAdmin } from "../middleware/auth";
 
 export const products = Router();
+
+// ping simples para debug
 products.get("/_ping", (_req, res) =>
   res.json({ ok: true, scope: "products-router" })
 );
@@ -31,6 +33,7 @@ function isAdminFromReq(req: any): boolean {
     return false;
   }
 }
+
 /** calcula melhor promoção ativa (agora) e preço final */
 function computeSale(p: any) {
   const now = new Date();
@@ -44,7 +47,6 @@ function computeSale(p: any) {
 
   if (!actives.length) return null;
 
-  // escolhe a de maior desconto efetivo
   const base = Number(p.price);
   let best: any = null;
   let bestPrice = base;
@@ -70,78 +72,84 @@ function computeSale(p: any) {
   };
 }
 
-/** GET — pública; ?q, ?sort, e ?all=1 (apenas ADMIN)  */
-// ===== NOVO: GET /products/:idOrSlug (página de produto) =====
-products.get("/:idOrSlug", async (req, res) => {
-  const idOrSlug = req.params.idOrSlug;
+/** =========================
+ *  GET "/" (listagem pública; ?q, ?sort; ?all=1 só p/ ADMIN)
+ *  ========================= */
+products.get("/", async (req, res) => {
+  const q = String(req.query.q || "").trim();
+  const sortParam = String(req.query.sort || "sortOrder");
+  const allFlag = String(req.query.all || "0") === "1";
+  const isAdmin = allFlag && isAdminFromReq(req);
 
-  const byId = await prisma.product.findUnique({
-    where: { id: idOrSlug },
+  const where: any = {};
+  if (!isAdmin) where.active = true;
+
+  if (q) {
+    where.OR = [
+      { name: { contains: q, mode: "insensitive" } },
+      { description: { contains: q, mode: "insensitive" } },
+    ];
+  }
+
+  const ORDER_MAP = {
+    name_asc: { name: "asc" as const },
+    name_desc: { name: "desc" as const },
+    price_asc: { price: "asc" as const },
+    price_desc: { price: "desc" as const },
+    sortOrder: { sortOrder: "asc" as const },
+  } as const;
+
+  const orderBy =
+    ORDER_MAP[sortParam as keyof typeof ORDER_MAP] ?? ORDER_MAP.sortOrder;
+
+  const list = await prisma.product.findMany({
+    where,
+    orderBy: [orderBy, { createdAt: "desc" as const }],
     include: {
       images: { orderBy: { sortOrder: "asc" as const } },
       categories: {
         include: { category: { include: { parent: true } } },
         take: 1,
       },
-      promotions: true,
+      promotions: true, // para calcular sale
     },
   });
 
-  const bySlug = byId
-    ? null
-    : await prisma.product.findUnique({
-        where: { slug: idOrSlug },
-        include: {
-          images: { orderBy: { sortOrder: "asc" as const } },
-          categories: {
-            include: { category: { include: { parent: true } } },
-            take: 1,
-          },
-          promotions: true,
-        },
-      });
-
-  const p: any = byId || bySlug;
-  if (!p) return res.status(404).json({ error: "not_found" });
-
-  // se não for admin, produto inativo não é visível
-  const wantAll = String(req.query.all || "0") === "1";
-  const isAdmin = wantAll && isAdminFromReq(req);
-  if (!isAdmin && !p.active)
-    return res.status(404).json({ error: "not_found" });
-
-  const firstCat = p.categories[0]?.category ?? null;
-  const sale = computeSale(p);
-
-  return res.json({
-    id: p.id,
-    name: p.name,
-    slug: p.slug,
-    description: p.description,
-    price: Number(p.price),
-    active: p.active,
-    stock: p.stock,
-    sortOrder: p.sortOrder,
-    packageSize: p.packageSize,
-    pdfUrl: p.pdfUrl,
-    category: firstCat
-      ? {
-          id: firstCat.id,
-          name: firstCat.name,
-          slug: firstCat.slug,
-          parent: firstCat.parent
-            ? {
-                id: firstCat.parent.id,
-                name: firstCat.parent.name,
-                slug: firstCat.parent.slug,
-              }
-            : null,
-        }
-      : null,
-    images: (p.images as any[]).map((im: any) => im.url),
-    imageUrl: p.images[0]?.url || p.imageUrl || null,
-    sale, // { salePrice, percentOff/priceOff, title, startsAt, endsAt } | null
-  });
+  res.json(
+    list.map((p: any) => {
+      const firstCat = p.categories[0]?.category ?? null;
+      const sale = computeSale(p);
+      return {
+        id: p.id,
+        name: p.name,
+        slug: p.slug,
+        description: p.description,
+        price: Number(p.price),
+        active: p.active,
+        stock: p.stock,
+        sortOrder: p.sortOrder,
+        packageSize: p.packageSize,
+        pdfUrl: p.pdfUrl,
+        category: firstCat
+          ? {
+              id: firstCat.id,
+              name: firstCat.name,
+              slug: firstCat.slug,
+              parent: firstCat.parent
+                ? {
+                    id: firstCat.parent.id,
+                    name: firstCat.parent.name,
+                    slug: firstCat.parent.slug,
+                  }
+                : null,
+            }
+          : null,
+        images: (p.images as any[]).map((im: any) => im.url),
+        imageUrl: p.images[0]?.url || p.imageUrl || null,
+        sale, // { salePrice, percentOff/priceOff, ... } | null
+      };
+    })
+  );
 });
 
 const Upsert = z.object({
@@ -157,7 +165,7 @@ const Upsert = z.object({
   imageUrl: urlish.optional(), // fallback
 });
 
-// Criar (ADMIN)
+/** Criar (ADMIN) */
 products.post("/", requireAdmin, async (req, res) => {
   const data = Upsert.parse(req.body);
   const slug = data.name
@@ -242,7 +250,7 @@ products.post("/", requireAdmin, async (req, res) => {
   });
 });
 
-// Atualizar (ADMIN)
+/** Atualizar (ADMIN) */
 products.put("/:id", requireAdmin, async (req, res) => {
   const data = Upsert.partial().parse(req.body);
   const id = req.params.id;
@@ -334,7 +342,7 @@ products.put("/:id", requireAdmin, async (req, res) => {
   });
 });
 
-// Deletar (ADMIN) — seguro: arquiva se houver pedidos
+/** Deletar (ADMIN) — seguro: arquiva se houver pedidos */
 products.delete("/:id", requireAdmin, async (req, res) => {
   const id = req.params.id;
   try {
@@ -364,7 +372,7 @@ products.delete("/:id", requireAdmin, async (req, res) => {
   }
 });
 
-// Exclusão definitiva explícita — só se NÃO houver pedidos
+/** Exclusão definitiva explícita — só se NÃO houver pedidos */
 products.delete("/:id/hard", requireAdmin, async (req, res) => {
   const id = req.params.id;
   try {
@@ -388,7 +396,7 @@ products.delete("/:id/hard", requireAdmin, async (req, res) => {
   }
 });
 
-// Ordenação (ADMIN)
+/** Ordenação (ADMIN) */
 products.patch("/:id/sort-order", requireAdmin, async (req, res) => {
   const body = z.object({ sortOrder: z.number().int() }).parse(req.body);
   await prisma.product.update({
@@ -398,7 +406,7 @@ products.patch("/:id/sort-order", requireAdmin, async (req, res) => {
   res.json({ ok: true });
 });
 
-// Arquivar / Desarquivar (ADMIN)
+/** Arquivar / Desarquivar (ADMIN) */
 products.patch("/:id/archive", requireAdmin, async (req, res) => {
   const id = req.params.id;
   try {
@@ -421,7 +429,7 @@ products.patch("/:id/unarchive", requireAdmin, async (req, res) => {
   }
 });
 
-// Agendar/atualizar promoção (sale) — percentOff OU priceOff
+/** Agendar/atualizar promoção (sale) — percentOff OU priceOff */
 products.put("/:id/sale", requireAdmin, async (req, res) => {
   const id = req.params.id;
   const Body = z
@@ -467,5 +475,81 @@ products.put("/:id/sale", requireAdmin, async (req, res) => {
       endsAt: created.endsAt,
       active: created.active,
     },
+  });
+});
+
+/** =========================
+ *  GET "/:idOrSlug"  (detalhe)
+ *  ====== DEIXE POR ÚLTIMO!
+ *  ========================= */
+products.get("/:idOrSlug", async (req, res) => {
+  const idOrSlug = req.params.idOrSlug;
+
+  const byId = await prisma.product.findUnique({
+    where: { id: idOrSlug },
+    include: {
+      images: { orderBy: { sortOrder: "asc" as const } },
+      categories: {
+        include: { category: { include: { parent: true } } },
+        take: 1,
+      },
+      promotions: true,
+    },
+  });
+
+  const bySlug = byId
+    ? null
+    : await prisma.product.findUnique({
+        where: { slug: idOrSlug },
+        include: {
+          images: { orderBy: { sortOrder: "asc" as const } },
+          categories: {
+            include: { category: { include: { parent: true } } },
+            take: 1,
+          },
+          promotions: true,
+        },
+      });
+
+  const p: any = byId || bySlug;
+  if (!p) return res.status(404).json({ error: "not_found" });
+
+  // se não for admin, produto inativo não é visível
+  const wantAll = String(req.query.all || "0") === "1";
+  const isAdmin = wantAll && isAdminFromReq(req);
+  if (!isAdmin && !p.active)
+    return res.status(404).json({ error: "not_found" });
+
+  const firstCat = p.categories[0]?.category ?? null;
+  const sale = computeSale(p);
+
+  return res.json({
+    id: p.id,
+    name: p.name,
+    slug: p.slug,
+    description: p.description,
+    price: Number(p.price),
+    active: p.active,
+    stock: p.stock,
+    sortOrder: p.sortOrder,
+    packageSize: p.packageSize,
+    pdfUrl: p.pdfUrl,
+    category: firstCat
+      ? {
+          id: firstCat.id,
+          name: firstCat.name,
+          slug: firstCat.slug,
+          parent: firstCat.parent
+            ? {
+                id: firstCat.parent.id,
+                name: firstCat.parent.name,
+                slug: firstCat.parent.slug,
+              }
+            : null,
+        }
+      : null,
+    images: (p.images as any[]).map((im: any) => im.url),
+    imageUrl: p.images[0]?.url || p.imageUrl || null,
+    sale, // { salePrice, percentOff/priceOff, ... } | null
   });
 });

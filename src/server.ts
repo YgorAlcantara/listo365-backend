@@ -1,3 +1,4 @@
+// src/server.ts
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -31,33 +32,33 @@ app.get("/health", async (_req, res) => {
   res.set("Cache-Control", "no-store");
   try {
     await prisma.$queryRaw`SELECT 1`;
-    res.json({ ok: true, db: true });
+    return res.json({ ok: true, db: true });
   } catch {
-    res.status(500).json({ ok: false, db: false });
+    return res.status(500).json({ ok: false, db: false });
   }
 });
 
-// 🚩 MONTE TODAS AS ROTAS **ANTES** do 404
+// Routers (ANTES do 404!)
 app.use("/auth", auth);
 app.use("/products", products);
 app.use("/orders", orders);
 app.use("/promotions", promotions);
 app.use("/categories", categories);
 
-// (opcional) debug de rotas
+// Rotas de diagnóstico (temporárias)
 app.get("/_routes", (_req, res) => {
-  const routes: any[] = [];
+  const list: any[] = [];
   // @ts-ignore
   app._router.stack.forEach((m: any) => {
     if (m.route) {
-      routes.push({
+      list.push({
         path: m.route.path,
         methods: Object.keys(m.route.methods).filter((k) => m.route.methods[k]),
       });
     } else if (m.name === "router" && m.handle?.stack) {
       m.handle.stack.forEach((h: any) => {
         if (h.route)
-          routes.push({
+          list.push({
             path: h.route.path,
             methods: Object.keys(h.route.methods).filter(
               (k) => h.route.methods[k]
@@ -66,13 +67,14 @@ app.get("/_routes", (_req, res) => {
       });
     }
   });
-  res.json(routes);
+  res.json(list);
 });
 
-// 🚩 Handler 404 SEMPRE POR ÚLTIMO
+// 404 por último
 app.use((req, res) =>
   res.status(404).json({ error: "not_found", path: req.path })
 );
 
+// Start
 const port = Number(process.env.PORT || 4000);
 app.listen(port, () => console.log(`API on :${port}`));
