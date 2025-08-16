@@ -21,12 +21,13 @@ function isAdminFromReq(req: any): boolean {
     if (!h.startsWith("Bearer ")) return false;
     const token = h.slice(7);
     const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as any;
-    return (decoded?.role ?? "USER") === "ADMIN";
+    const role = decoded?.role ?? "USER";
+    const id = decoded?.sub ?? decoded?.uid; // compat
+    return !!id && role === "ADMIN";
   } catch {
     return false;
   }
 }
-
 /** calcula melhor promoção ativa (agora) e preço final */
 function computeSale(p: any) {
   const now = new Date();
@@ -67,81 +68,77 @@ function computeSale(p: any) {
 }
 
 /** GET — pública; ?q, ?sort, e ?all=1 (apenas ADMIN)  */
-products.get("/", async (req, res) => {
-  const q = String(req.query.q || "").trim();
-  const sortParam = String(req.query.sort || "sortOrder");
-  const allFlag = String(req.query.all || "0") === "1";
-  const isAdmin = allFlag && isAdminFromReq(req);
+// ===== NOVO: GET /products/:idOrSlug (página de produto) =====
+products.get("/:idOrSlug", async (req, res) => {
+  const idOrSlug = req.params.idOrSlug;
 
-  const where: any = {};
-  if (!isAdmin) where.active = true;
-
-  if (q) {
-    where.OR = [
-      { name: { contains: q, mode: "insensitive" } },
-      { description: { contains: q, mode: "insensitive" } },
-    ];
-  }
-
-  const ORDER_MAP = {
-    name_asc: { name: "asc" as const },
-    name_desc: { name: "desc" as const },
-    price_asc: { price: "asc" as const },
-    price_desc: { price: "desc" as const },
-    sortOrder: { sortOrder: "asc" as const },
-  } as const;
-
-  const orderBy =
-    ORDER_MAP[sortParam as keyof typeof ORDER_MAP] ?? ORDER_MAP.sortOrder;
-
-  const list = await prisma.product.findMany({
-    where,
-    orderBy: [orderBy, { createdAt: "desc" as const }],
+  const byId = await prisma.product.findUnique({
+    where: { id: idOrSlug },
     include: {
       images: { orderBy: { sortOrder: "asc" as const } },
       categories: {
         include: { category: { include: { parent: true } } },
         take: 1,
       },
-      promotions: true, // para calcular sale
+      promotions: true,
     },
   });
 
-  res.json(
-    list.map((p: any) => {
-      const firstCat = p.categories[0]?.category ?? null;
-      const sale = computeSale(p);
-      return {
-        id: p.id,
-        name: p.name,
-        slug: p.slug,
-        description: p.description,
-        price: Number(p.price),
-        active: p.active,
-        stock: p.stock,
-        sortOrder: p.sortOrder,
-        packageSize: p.packageSize,
-        pdfUrl: p.pdfUrl,
-        category: firstCat
-          ? {
-              id: firstCat.id,
-              name: firstCat.name,
-              slug: firstCat.slug,
-              parent: firstCat.parent
-                ? {
-                    id: firstCat.parent.id,
-                    name: firstCat.parent.name,
-                    slug: firstCat.parent.slug,
-                  }
-                : null,
-            }
-          : null,
-        images: (p.images as any[]).map((im: any) => im.url),
-        imageUrl: p.images[0]?.url || p.imageUrl || null,
-        sale, // { salePrice, percentOff/priceOff, title, startsAt, endsAt } | null
-      };
-    })
-  );
+  const bySlug = byId
+    ? null
+    : await prisma.product.findUnique({
+        where: { slug: idOrSlug },
+        include: {
+          images: { orderBy: { sortOrder: "asc" as const } },
+          categories: {
+            include: { category: { include: { parent: true } } },
+            take: 1,
+          },
+          promotions: true,
+        },
+      });
+
+  const p: any = byId || bySlug;
+  if (!p) return res.status(404).json({ error: "not_found" });
+
+  // se não for admin, produto inativo não é visível
+  const wantAll = String(req.query.all || "0") === "1";
+  const isAdmin = wantAll && isAdminFromReq(req);
+  if (!isAdmin && !p.active)
+    return res.status(404).json({ error: "not_found" });
+
+  const firstCat = p.categories[0]?.category ?? null;
+  const sale = computeSale(p);
+
+  return res.json({
+    id: p.id,
+    name: p.name,
+    slug: p.slug,
+    description: p.description,
+    price: Number(p.price),
+    active: p.active,
+    stock: p.stock,
+    sortOrder: p.sortOrder,
+    packageSize: p.packageSize,
+    pdfUrl: p.pdfUrl,
+    category: firstCat
+      ? {
+          id: firstCat.id,
+          name: firstCat.name,
+          slug: firstCat.slug,
+          parent: firstCat.parent
+            ? {
+                id: firstCat.parent.id,
+                name: firstCat.parent.name,
+                slug: firstCat.parent.slug,
+              }
+            : null,
+        }
+      : null,
+    images: (p.images as any[]).map((im: any) => im.url),
+    imageUrl: p.images[0]?.url || p.imageUrl || null,
+    sale, // { salePrice, percentOff/priceOff, title, startsAt, endsAt } | null
+  });
 });
 
 const Upsert = z.object({
