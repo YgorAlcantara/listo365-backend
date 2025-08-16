@@ -5,6 +5,9 @@ import jwt from "jsonwebtoken";
 import { requireAdmin } from "../middleware/auth";
 
 export const products = Router();
+products.get("/_ping", (_req, res) =>
+  res.json({ ok: true, scope: "products-router" })
+);
 
 /** helper: aceita http(s) OU caminho absoluto iniciando por "/" */
 const urlish = z
