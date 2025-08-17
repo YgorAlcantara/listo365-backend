@@ -6,7 +6,7 @@ import { requireAdmin } from "../middleware/auth";
 
 export const products = Router();
 
-// ping simples para debug
+/** ping simples para debug */
 products.get("/_ping", (_req, res) =>
   res.json({ ok: true, scope: "products-router" })
 );
@@ -72,8 +72,60 @@ function computeSale(p: any) {
   };
 }
 
+/** serialização respeitando flags de visibilidade (no público) */
+function serializeProduct(p: any, isAdmin: boolean) {
+  const firstCat = p.categories[0]?.category ?? null;
+  const sale = p.sale ?? computeSale(p);
+
+  const show = (flag: boolean) => (isAdmin ? true : !!flag);
+
+  return {
+    id: p.id,
+    name: p.name,
+    slug: p.slug,
+    description: show(p.visibleDescription) ? p.description : undefined,
+    price: show(p.visiblePrice) ? Number(p.price) : undefined,
+    active: p.active,
+    stock: p.stock,
+    sortOrder: p.sortOrder,
+    packageSize: show(p.visiblePackageSize) ? p.packageSize : undefined,
+    pdfUrl: show(p.visiblePdf) ? p.pdfUrl : undefined,
+    category: firstCat
+      ? {
+          id: firstCat.id,
+          name: firstCat.name,
+          slug: firstCat.slug,
+          parent: firstCat.parent
+            ? {
+                id: firstCat.parent.id,
+                name: firstCat.parent.name,
+                slug: firstCat.parent.slug,
+              }
+            : null,
+        }
+      : null,
+    images: show(p.visibleImages)
+      ? (p.images as any[]).map((im: any) => im.url)
+      : [],
+    imageUrl: show(p.visibleImages)
+      ? p.images[0]?.url || p.imageUrl || null
+      : null,
+    sale, // { salePrice, percentOff/priceOff, ... } | null
+    // expõe flags para o Admin enxergar/editar
+    visibility: isAdmin
+      ? {
+          price: p.visiblePrice,
+          packageSize: p.visiblePackageSize,
+          pdf: p.visiblePdf,
+          images: p.visibleImages,
+          description: p.visibleDescription,
+        }
+      : undefined,
+  };
+}
+
 /** =========================
- *  GET "/" (listagem pública; ?q, ?sort; ?all=1 só p/ ADMIN)
+ *  GET "/" (lista pública; ?q, ?sort; ?all=1 só p/ ADMIN)
  *  ========================= */
 products.get("/", async (req, res) => {
   const q = String(req.query.q || "").trim();
@@ -111,47 +163,18 @@ products.get("/", async (req, res) => {
         include: { category: { include: { parent: true } } },
         take: 1,
       },
-      promotions: true, // para calcular sale
+      promotions: true,
     },
   });
 
   res.json(
-    list.map((p: any) => {
-      const firstCat = p.categories[0]?.category ?? null;
-      const sale = computeSale(p);
-      return {
-        id: p.id,
-        name: p.name,
-        slug: p.slug,
-        description: p.description,
-        price: Number(p.price),
-        active: p.active,
-        stock: p.stock,
-        sortOrder: p.sortOrder,
-        packageSize: p.packageSize,
-        pdfUrl: p.pdfUrl,
-        category: firstCat
-          ? {
-              id: firstCat.id,
-              name: firstCat.name,
-              slug: firstCat.slug,
-              parent: firstCat.parent
-                ? {
-                    id: firstCat.parent.id,
-                    name: firstCat.parent.name,
-                    slug: firstCat.parent.slug,
-                  }
-                : null,
-            }
-          : null,
-        images: (p.images as any[]).map((im: any) => im.url),
-        imageUrl: p.images[0]?.url || p.imageUrl || null,
-        sale, // { salePrice, percentOff/priceOff, ... } | null
-      };
-    })
+    list.map((p: any) =>
+      serializeProduct({ ...p, sale: computeSale(p) }, isAdmin)
+    )
   );
 });
 
+/** payload de criação/edição */
 const Upsert = z.object({
   name: z.string().min(2),
   description: z.string().min(2),
@@ -161,8 +184,15 @@ const Upsert = z.object({
   packageSize: z.string().min(1).max(100).optional(),
   pdfUrl: urlish.optional(),
   images: z.array(urlish).min(1).max(10).optional(),
-  categoryId: z.string().min(1).optional(), // id da categoria filha
-  imageUrl: urlish.optional(), // fallback
+  categoryId: z.string().min(1).optional(),
+  imageUrl: urlish.optional(),
+
+  // flags de visibilidade (opcionais no create/update)
+  visiblePrice: z.boolean().optional(),
+  visiblePackageSize: z.boolean().optional(),
+  visiblePdf: z.boolean().optional(),
+  visibleImages: z.boolean().optional(),
+  visibleDescription: z.boolean().optional(),
 });
 
 /** Criar (ADMIN) */
@@ -185,6 +215,12 @@ products.post("/", requireAdmin, async (req, res) => {
       pdfUrl: data.pdfUrl,
       imageUrl: data.imageUrl ?? "",
       sortOrder: 0,
+      // visibilidade (se vierem, aplica; senão usa defaults do schema)
+      visiblePrice: data.visiblePrice ?? undefined,
+      visiblePackageSize: data.visiblePackageSize ?? undefined,
+      visiblePdf: data.visiblePdf ?? undefined,
+      visibleImages: data.visibleImages ?? undefined,
+      visibleDescription: data.visibleDescription ?? undefined,
     },
   });
 
@@ -216,38 +252,9 @@ products.post("/", requireAdmin, async (req, res) => {
     },
   });
 
-  const firstCat = full?.categories[0]?.category ?? null;
-  const sale = computeSale(full);
-
-  res.status(201).json({
-    id: full!.id,
-    name: full!.name,
-    slug: full!.slug,
-    description: full!.description,
-    price: Number(full!.price),
-    active: full!.active,
-    stock: full!.stock,
-    sortOrder: full!.sortOrder,
-    packageSize: full!.packageSize,
-    pdfUrl: full!.pdfUrl,
-    category: firstCat
-      ? {
-          id: firstCat.id,
-          name: firstCat.name,
-          slug: firstCat.slug,
-          parent: firstCat.parent
-            ? {
-                id: firstCat.parent.id,
-                name: firstCat.parent.name,
-                slug: firstCat.parent.slug,
-              }
-            : null,
-        }
-      : null,
-    images: (full!.images as any[]).map((im: any) => im.url),
-    imageUrl: full!.images[0]?.url || full!.imageUrl || null,
-    sale,
-  });
+  res
+    .status(201)
+    .json(serializeProduct({ ...full!, sale: computeSale(full) }, true));
 });
 
 /** Atualizar (ADMIN) */
@@ -271,6 +278,15 @@ products.put("/:id", requireAdmin, async (req, res) => {
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/(^-|-$)/g, "");
   }
+  // flags de visibilidade se vierem
+  if (data.visiblePrice !== undefined) patch.visiblePrice = data.visiblePrice;
+  if (data.visiblePackageSize !== undefined)
+    patch.visiblePackageSize = data.visiblePackageSize;
+  if (data.visiblePdf !== undefined) patch.visiblePdf = data.visiblePdf;
+  if (data.visibleImages !== undefined)
+    patch.visibleImages = data.visibleImages;
+  if (data.visibleDescription !== undefined)
+    patch.visibleDescription = data.visibleDescription;
 
   await prisma.product.update({ where: { id }, data: patch });
 
@@ -308,38 +324,7 @@ products.put("/:id", requireAdmin, async (req, res) => {
     },
   });
 
-  const firstCat = full?.categories[0]?.category ?? null;
-  const sale = computeSale(full);
-
-  res.json({
-    id: full!.id,
-    name: full!.name,
-    slug: full!.slug,
-    description: full!.description,
-    price: Number(full!.price),
-    active: full!.active,
-    stock: full!.stock,
-    sortOrder: full!.sortOrder,
-    packageSize: full!.packageSize,
-    pdfUrl: full!.pdfUrl,
-    category: firstCat
-      ? {
-          id: firstCat.id,
-          name: firstCat.name,
-          slug: firstCat.slug,
-          parent: firstCat.parent
-            ? {
-                id: firstCat.parent.id,
-                name: firstCat.parent.name,
-                slug: firstCat.parent.slug,
-              }
-            : null,
-        }
-      : null,
-    images: (full!.images as any[]).map((im: any) => im.url),
-    imageUrl: full!.images[0]?.url || full!.imageUrl || null,
-    sale,
-  });
+  res.json(serializeProduct({ ...full!, sale: computeSale(full) }, true));
 });
 
 /** Deletar (ADMIN) — seguro: arquiva se houver pedidos */
@@ -429,6 +414,40 @@ products.patch("/:id/unarchive", requireAdmin, async (req, res) => {
   }
 });
 
+/** Toggle de visibilidade (ADMIN) */
+products.patch("/:id/visibility", requireAdmin, async (req, res) => {
+  const Body = z.object({
+    price: z.boolean().optional(),
+    packageSize: z.boolean().optional(),
+    pdf: z.boolean().optional(),
+    images: z.boolean().optional(),
+    description: z.boolean().optional(),
+  });
+  const b = Body.parse(req.body);
+
+  const data: any = {};
+  if (b.price !== undefined) data.visiblePrice = b.price;
+  if (b.packageSize !== undefined) data.visiblePackageSize = b.packageSize;
+  if (b.pdf !== undefined) data.visiblePdf = b.pdf;
+  if (b.images !== undefined) data.visibleImages = b.images;
+  if (b.description !== undefined) data.visibleDescription = b.description;
+
+  const updated = await prisma.product.update({
+    where: { id: req.params.id },
+    data,
+  });
+  res.json({
+    ok: true,
+    visibility: {
+      price: updated.visiblePrice,
+      packageSize: updated.visiblePackageSize,
+      pdf: updated.visiblePdf,
+      images: updated.visibleImages,
+      description: updated.visibleDescription,
+    },
+  });
+});
+
 /** Agendar/atualizar promoção (sale) — percentOff OU priceOff */
 products.put("/:id/sale", requireAdmin, async (req, res) => {
   const id = req.params.id;
@@ -448,7 +467,6 @@ products.put("/:id/sale", requireAdmin, async (req, res) => {
 
   const body = Body.parse(req.body);
 
-  // simples: apaga promoções ativas colidentes e cria uma nova
   await prisma.promotion.deleteMany({ where: { productId: id, active: true } });
 
   const created = await prisma.promotion.create({
@@ -520,36 +538,5 @@ products.get("/:idOrSlug", async (req, res) => {
   if (!isAdmin && !p.active)
     return res.status(404).json({ error: "not_found" });
 
-  const firstCat = p.categories[0]?.category ?? null;
-  const sale = computeSale(p);
-
-  return res.json({
-    id: p.id,
-    name: p.name,
-    slug: p.slug,
-    description: p.description,
-    price: Number(p.price),
-    active: p.active,
-    stock: p.stock,
-    sortOrder: p.sortOrder,
-    packageSize: p.packageSize,
-    pdfUrl: p.pdfUrl,
-    category: firstCat
-      ? {
-          id: firstCat.id,
-          name: firstCat.name,
-          slug: firstCat.slug,
-          parent: firstCat.parent
-            ? {
-                id: firstCat.parent.id,
-                name: firstCat.parent.name,
-                slug: firstCat.parent.slug,
-              }
-            : null,
-        }
-      : null,
-    images: (p.images as any[]).map((im: any) => im.url),
-    imageUrl: p.images[0]?.url || p.imageUrl || null,
-    sale, // { salePrice, percentOff/priceOff, ... } | null
-  });
+  return res.json(serializeProduct({ ...p, sale: computeSale(p) }, isAdmin));
 });

@@ -10,6 +10,7 @@ import { products } from "./routes/products";
 import { orders } from "./routes/orders";
 import { promotions } from "./routes/promotions";
 import { categories } from "./routes/categories";
+import { customers } from "./routes/customers";
 
 const app = express();
 
@@ -17,6 +18,7 @@ const app = express();
 const envOrigins = process.env.FRONTEND_ORIGIN?.split(",")
   .map((s) => s.trim())
   .filter(Boolean);
+
 app.use(
   cors({
     origin: envOrigins && envOrigins.length ? envOrigins : true,
@@ -33,7 +35,8 @@ app.get("/health", async (_req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
     return res.json({ ok: true, db: true });
-  } catch {
+  } catch (e) {
+    console.error("health db error", e);
     return res.status(500).json({ ok: false, db: false });
   }
 });
@@ -44,6 +47,7 @@ app.use("/products", products);
 app.use("/orders", orders);
 app.use("/promotions", promotions);
 app.use("/categories", categories);
+app.use("/customers", customers);
 
 // Rotas de diagnóstico (temporárias)
 app.get("/_routes", (_req, res) => {

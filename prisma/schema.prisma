@@ -4,43 +4,46 @@ generator client {
 
 datasource db {
   provider  = "postgresql"
-  url       = env("DATABASE_URL") // runtime (pooler)
-  directUrl = env("DIRECT_URL") // migrations (sem pooler)
+  url       = env("DATABASE_URL") // pooler (runtime)
+  directUrl = env("DIRECT_URL")   // sem pooler (migrate)
 }
 
-model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  password  String
-  name      String
-  role      String   @default("ADMIN")
-  createdAt DateTime @default(now())
-}
+/* ===========================
+   CATEGORIES
+   =========================== */
 
 model Category {
   id       String            @id @default(cuid())
   name     String
   slug     String            @unique
-  parent   Category?         @relation("CategoryToCategory", fields: [parentId], references: [id])
+  parent   Category?         @relation("CategoryToCategory", fields: [parentId], references: [id], onDelete: SetNull, onUpdate: Cascade)
   parentId String?
   children Category[]        @relation("CategoryToCategory")
   products ProductCategory[]
 
   @@index([parentId])
+  @@index([slug])
+  @@index([name])
 }
 
 model ProductCategory {
-  product    Product  @relation(fields: [productId], references: [id])
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   productId  String
-  category   Category @relation(fields: [categoryId], references: [id])
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   categoryId String
 
   @@id([productId, categoryId])
+  @@index([categoryId])
+  @@index([productId])
 }
+
+/* ===========================
+   PRODUCTS
+   =========================== */
 
 model ProductImage {
   id        String   @id @default(cuid())
-  product   Product  @relation(fields: [productId], references: [id])
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   productId String
   url       String
   sortOrder Int      @default(0)
@@ -56,7 +59,7 @@ model Product {
   slug        String   @unique
   description String
   price       Decimal  @db.Decimal(12, 2)
-  imageUrl    String // fallback legado
+  imageUrl    String
   active      Boolean  @default(true)
   stock       Int      @default(0)
   createdAt   DateTime @default(now())
@@ -66,15 +69,26 @@ model Product {
   packageSize String?
   pdfUrl      String?
 
+  /* Flags de visibilidade no site público */
+  visiblePrice        Boolean @default(false) // negociação direta: escondido por padrão
+  visiblePackageSize  Boolean @default(true)
+  visiblePdf          Boolean @default(true)
+  visibleImages       Boolean @default(true)
+  visibleDescription  Boolean @default(true)
+
   categories ProductCategory[]
   promotions Promotion[]
   orderItems OrderItem[]
   images     ProductImage[]
+
+  @@index([active, sortOrder])
+  @@index([createdAt])
+  @@index([name])
 }
 
 model Promotion {
   id          String   @id @default(cuid())
-  product     Product  @relation(fields: [productId], references: [id])
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   productId   String
   title       String
   description String?
@@ -83,25 +97,117 @@ model Promotion {
   startsAt    DateTime
   endsAt      DateTime
   active      Boolean  @default(true)
+
+  @@index([productId, active, startsAt, endsAt])
 }
 
-model OrderInquiry {
-  id            String      @id @default(cuid())
-  customerName  String
-  customerEmail String
-  customerPhone String?
+/* ===========================
+   USERS
+   =========================== */
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  name      String
+  role      String   @default("ADMIN")
+  createdAt DateTime @default(now())
+}
+
+/* ===========================
+   CRM: CONTACT & ADDRESS
+   =========================== */
+
+model Contact {
+  id            String    @id @default(cuid())
+  email         String
+  phone         String?
+  name          String
+  company       String?
+  marketingOptIn Boolean  @default(false)
+  tags          String[]  @default([]) // labels/segmentação simples
   note          String?
-  items         OrderItem[]
-  status        String      @default("RECEIVED")
-  createdAt     DateTime    @default(now())
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  addresses     Address[]
+  orders        Order[]
+
+  @@unique([email]) // um contato por email (ajuda deduplicar)
+  @@index([name])
+  @@index([phone])
+}
+
+model Address {
+  id          String   @id @default(cuid())
+  contact     Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  contactId   String?
+  line1       String
+  line2       String?
+  district    String?
+  city        String
+  state       String?
+  postalCode  String?
+  country     String   @default("US")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  ordersAsShipping Order[]
+
+  @@index([contactId])
+  @@index([city])
+  @@index([postalCode])
+}
+
+/* ===========================
+   ORDERS (mapeado para OrderInquiry)
+   =========================== */
+
+model Order {
+  @@map("OrderInquiry")
+
+  id               String    @id @default(cuid())
+  customerName     String
+  customerEmail    String
+  customerPhone    String?
+  notes            String?   @map("note")
+  status           String    @default("RECEIVED") // RECEIVED|PENDING|IN_PROGRESS|COMPLETED|DECLINED|CANCELED
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  items            OrderItem[]
+
+  /* CRM */
+  contact          Contact?  @relation(fields: [contactId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  contactId        String?
+
+  /* Endereço na “sacola” (envio/faturamento) */
+  shippingAddress  Address?  @relation(fields: [shippingAddressId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  shippingAddressId String?
+
+  /* Recorrência */
+  recurrence       String?   // NONE|WEEKLY|BIWEEKLY|MONTHLY|CUSTOM
+  intervalDays     Int?      // usado quando recurrence=CUSTOM
+
+  /* Totais opcionais (podem ser 0 por ser orçamento/negociação) */
+  subtotal         Decimal   @db.Decimal(12, 2) @default(0)
+  total            Decimal   @db.Decimal(12, 2) @default(0)
+  currency         String    @default("USD")
+
+  @@index([status, createdAt])
+  @@index([customerEmail])
+  @@index([contactId])
+  @@index([shippingAddressId])
 }
 
 model OrderItem {
-  id        String       @id @default(cuid())
-  order     OrderInquiry @relation(fields: [orderId], references: [id])
+  id        String   @id @default(cuid())
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   orderId   String
-  product   Product      @relation(fields: [productId], references: [id])
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   productId String
   quantity  Int
-  unitPrice Decimal      @db.Decimal(12, 2)
+  unitPrice Decimal  @db.Decimal(12, 2) // snapshot no momento do pedido
+
+  @@index([orderId])
+  @@index([productId])
 }
