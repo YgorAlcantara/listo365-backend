@@ -1,3 +1,4 @@
+// src/routes/customers.ts
 import { Router, Request, Response } from "express";
 import { prisma } from "../lib/prisma";
 import { requireAdmin } from "../middleware/auth";
@@ -5,7 +6,12 @@ import { z } from "zod";
 
 export const customers = Router();
 
-// GET /customers (ADMIN) — lista com paginação e busca
+// sanity ping
+customers.get("/_ping", (_req, res) =>
+  res.json({ ok: true, scope: "customers-router" })
+);
+
+// GET /customers — lista paginada + busca
 customers.get("/", requireAdmin, async (req: Request, res: Response) => {
   const Query = z.object({
     q: z.string().optional(),
@@ -31,21 +37,24 @@ customers.get("/", requireAdmin, async (req: Request, res: Response) => {
       orderBy: { createdAt: "desc" },
       skip: (page - 1) * pageSize,
       take: pageSize,
-      include: { addresses: { orderBy: { createdAt: "desc" } } },
+      include: {
+        addresses: { orderBy: { createdAt: "desc" } },
+      },
     }),
   ]);
 
   res.json({ total, page, pageSize, rows });
 });
 
-// GET /customers/:id (ADMIN) — detalhe + últimos pedidos
+// GET /customers/:id — detalhe + últimos pedidos
 customers.get("/:id", requireAdmin, async (req: Request, res: Response) => {
   const id = req.params.id;
+
   const c = await prisma.customer.findUnique({
     where: { id },
     include: {
       addresses: true,
-      OrderInquiry: {
+      orders: {
         orderBy: { createdAt: "desc" },
         take: 20,
         include: {
@@ -54,16 +63,18 @@ customers.get("/:id", requireAdmin, async (req: Request, res: Response) => {
               product: { select: { id: true, name: true, slug: true } },
             },
           },
+          // <-- aqui é "address", conforme seu schema OrderInquiry
           address: true,
         },
       },
     },
   });
+
   if (!c) return res.status(404).json({ error: "not_found" });
   res.json(c);
 });
 
-// GET /customers/export/csv (ADMIN) — contatos opt-in
+// GET /customers/export/csv — contatos opt-in
 customers.get(
   "/export/csv",
   requireAdmin,
@@ -77,7 +88,6 @@ customers.get(
     const lines: string[] = [];
     lines.push(["Name", "Email", "Phone", "CreatedAt"].join(","));
     for (const c of list) {
-      // CSV simples usando JSON.stringify para escapar
       const name = JSON.stringify(c.name ?? "");
       const email = JSON.stringify(c.email ?? "");
       const phone = JSON.stringify(c.phone ?? "");
