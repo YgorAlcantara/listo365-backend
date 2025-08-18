@@ -1,39 +1,63 @@
+// src/routes/orders.ts
 import { Router, Request, Response } from "express";
 import { prisma } from "../lib/prisma";
-import { z } from "zod";
 import { requireAdmin } from "../middleware/auth";
-import type { Prisma } from "@prisma/client";
+import { z } from "zod";
+import { Prisma } from "@prisma/client"; // <<< ADICIONE ESTA LINHA
 
 export const orders = Router();
 
-const StatusEnum = z.enum([
+// ping
+orders.get("/_ping", (_req, res) =>
+  res.json({ ok: true, scope: "orders-router" })
+);
+
+type OrderStatus =
+  | "RECEIVED"
+  | "IN_PROGRESS"
+  | "COMPLETED"
+  | "REFUSED"
+  | "CANCELLED";
+
+const STATUS_VALUES: OrderStatus[] = [
   "RECEIVED",
   "IN_PROGRESS",
   "COMPLETED",
   "REFUSED",
   "CANCELLED",
-]);
-type OrderStatus = z.infer<typeof StatusEnum>;
+];
 
-// include padrão dos pedidos
-function buildOrderInclude() {
-  return {
-    customer: true,
-    address: true,
-    items: {
-      include: {
-        product: { select: { id: true, name: true, slug: true, stock: true } },
-      },
-      orderBy: { id: "asc" as const },
-    },
-  } as const;
+// ---------- helpers ----------
+async function applyStockDelta(
+  tx: Prisma.TransactionClient, // <<< AQUI: era typeof prisma
+  items: Array<{ productId: string; quantity: number }>,
+  direction: "dec" | "inc"
+) {
+  for (const it of items) {
+    const delta = direction === "dec" ? -it.quantity : it.quantity;
+    await tx.product.update({
+      where: { id: it.productId },
+      data: { stock: { increment: delta } },
+    });
+  }
 }
 
-// GET /orders (ADMIN) — paginação, busca, filtros
+function calcTotals(items: Array<{ quantity: number; unitPrice: number }>) {
+  const subtotal = items.reduce(
+    (acc, it) => acc + it.quantity * (Number(it.unitPrice) || 0),
+    0
+  );
+  return {
+    subtotal: Number(subtotal.toFixed(2)),
+    total: Number(subtotal.toFixed(2)),
+  };
+}
+
+// =============== LIST ===============
 orders.get("/", requireAdmin, async (req: Request, res: Response) => {
   const Query = z.object({
     q: z.string().optional(),
-    status: StatusEnum.optional(),
+    status: z.enum(STATUS_VALUES as [OrderStatus, ...OrderStatus[]]).optional(),
     page: z.coerce.number().int().positive().default(1),
     pageSize: z.coerce.number().int().min(1).max(100).default(20),
   });
@@ -46,11 +70,9 @@ orders.get("/", requireAdmin, async (req: Request, res: Response) => {
     const term = q.trim();
     where.OR = [
       { id: { contains: term, mode: "insensitive" } },
-      { note: { contains: term, mode: "insensitive" } },
-      { adminNote: { contains: term, mode: "insensitive" } },
-      { customer: { name: { contains: term, mode: "insensitive" } } },
-      { customer: { email: { contains: term, mode: "insensitive" } } },
-      { customer: { phone: { contains: term, mode: "insensitive" } } },
+      { customerName: { contains: term, mode: "insensitive" } },
+      { customerEmail: { contains: term, mode: "insensitive" } },
+      { customerPhone: { contains: term, mode: "insensitive" } },
     ];
   }
 
@@ -61,34 +83,167 @@ orders.get("/", requireAdmin, async (req: Request, res: Response) => {
       orderBy: { createdAt: "desc" },
       skip: (page - 1) * pageSize,
       take: pageSize,
-      include: buildOrderInclude(),
+      include: {
+        customer: true,
+        items: {
+          select: {
+            id: true,
+            quantity: true,
+            unitPrice: true,
+            productId: true,
+          },
+        },
+      },
     }),
   ]);
 
   res.json({ total, page, pageSize, rows });
 });
 
-// GET /orders/:id (ADMIN) — detalhe
+// =============== DETAIL ===============
 orders.get("/:id", requireAdmin, async (req: Request, res: Response) => {
   const id = req.params.id;
-  const order = await prisma.orderInquiry.findUnique({
+  const o = await prisma.orderInquiry.findUnique({
     where: { id },
-    include: buildOrderInclude(),
+    include: {
+      customer: true,
+      address: true,
+      items: {
+        include: {
+          product: { select: { id: true, name: true, slug: true } },
+        },
+      },
+    },
   });
-  if (!order) return res.status(404).json({ error: "not_found" });
-  res.json(order);
+  if (!o) return res.status(404).json({ error: "not_found" });
+  res.json(o);
 });
 
-// PATCH /orders/:id/status (ADMIN) — ajusta estoque ao mudar para/desde COMPLETED
+// =============== CREATE (public) ===============
+orders.post("/", async (req: Request, res: Response) => {
+  const Body = z.object({
+    customer: z.object({
+      name: z.string().min(2),
+      email: z.string().email(),
+      phone: z.string().optional().nullable(),
+      marketingOptIn: z.boolean().optional().default(false),
+      company: z.string().optional().nullable(),
+    }),
+    address: z
+      .object({
+        line1: z.string().min(2),
+        line2: z.string().optional().nullable(),
+        district: z.string().optional().nullable(),
+        city: z.string().min(1),
+        state: z.string().optional().nullable(),
+        postalCode: z.string().optional().nullable(),
+        country: z.string().optional().default("US"),
+      })
+      .optional()
+      .nullable(),
+    items: z
+      .array(
+        z.object({
+          productId: z.string().min(1),
+          quantity: z.number().int().positive(),
+          unitPrice: z.number().nonnegative().default(0),
+        })
+      )
+      .min(1),
+    note: z.string().max(1000).optional().nullable(),
+    recurrence: z.string().optional().nullable(),
+  });
+
+  const body = Body.parse(req.body);
+  const totals = calcTotals(body.items);
+
+  const created = await prisma.$transaction(async (tx) => {
+    const customer = await tx.customer.upsert({
+      where: { email: body.customer.email },
+      update: {
+        name: body.customer.name,
+        phone: body.customer.phone ?? undefined,
+        company: body.customer.company ?? undefined,
+        marketingOptIn: body.customer.marketingOptIn ?? false,
+      },
+      create: {
+        email: body.customer.email,
+        name: body.customer.name,
+        phone: body.customer.phone ?? undefined,
+        company: body.customer.company ?? undefined,
+        marketingOptIn: body.customer.marketingOptIn ?? false,
+      },
+    });
+
+    let addressId: string | null = null;
+    if (body.address) {
+      const addr = await tx.address.create({
+        data: {
+          customerId: customer.id,
+          line1: body.address.line1,
+          line2: body.address.line2 ?? undefined,
+          district: body.address.district ?? undefined,
+          city: body.address.city,
+          state: body.address.state ?? undefined,
+          postalCode: body.address.postalCode ?? undefined,
+          country: body.address.country ?? "US",
+        },
+        select: { id: true },
+      });
+      addressId = addr.id;
+    }
+
+    const order = await tx.orderInquiry.create({
+      data: {
+        customerId: customer.id,
+        addressId,
+        status: "RECEIVED",
+        note: body.note ?? null,
+        adminNote: null,
+        recurrence: body.recurrence ?? null,
+
+        // snapshot
+        customerName: customer.name,
+        customerEmail: customer.email,
+        customerPhone: customer.phone ?? null,
+
+        subtotal: totals.subtotal,
+        total: totals.total,
+        currency: "USD",
+
+        items: {
+          create: body.items.map((it) => ({
+            productId: it.productId,
+            quantity: it.quantity,
+            unitPrice: it.unitPrice ?? 0,
+          })),
+        },
+      },
+      include: {
+        customer: true,
+        address: true,
+        items: true,
+      },
+    });
+
+    return order;
+  });
+
+  res.status(201).json(created);
+});
+
+// =============== CHANGE STATUS (ADMIN) ===============
 orders.patch(
   "/:id/status",
   requireAdmin,
   async (req: Request, res: Response) => {
-    const id = req.params.id;
-    const Body = z.object({ status: StatusEnum });
+    const Body = z.object({
+      status: z.enum(STATUS_VALUES as [OrderStatus, ...OrderStatus[]]),
+    });
     const { status: next } = Body.parse(req.body);
+    const id = req.params.id;
 
-    await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    const updated = await prisma.$transaction(async (tx) => {
       const current = await tx.orderInquiry.findUnique({
         where: { id },
         include: { items: true },
@@ -97,156 +252,52 @@ orders.patch(
 
       const prev = current.status as OrderStatus;
 
-      // Sai de COMPLETED -> repõe estoque
-      if (prev === "COMPLETED" && next !== "COMPLETED") {
-        for (const it of current.items) {
-          await tx.product.update({
-            where: { id: it.productId },
-            data: { stock: { increment: it.quantity } },
-          });
-        }
-      }
-
-      // Entra em COMPLETED -> baixa estoque
       if (prev !== "COMPLETED" && next === "COMPLETED") {
-        for (const it of current.items) {
-          await tx.product.update({
-            where: { id: it.productId },
-            data: { stock: { decrement: it.quantity } },
-          });
-        }
+        await applyStockDelta(
+          tx,
+          current.items.map((i) => ({
+            productId: i.productId,
+            quantity: i.quantity,
+          })),
+          "dec"
+        );
+      } else if (prev === "COMPLETED" && next !== "COMPLETED") {
+        await applyStockDelta(
+          tx,
+          current.items.map((i) => ({
+            productId: i.productId,
+            quantity: i.quantity,
+          })),
+          "inc"
+        );
       }
 
-      await tx.orderInquiry.update({ where: { id }, data: { status: next } });
+      return tx.orderInquiry.update({
+        where: { id },
+        data: { status: next },
+      });
     });
 
-    const updated = await prisma.orderInquiry.findUnique({
-      where: { id },
-      include: buildOrderInclude(),
-    });
-
-    res.json(updated);
+    res.json({ ok: true, status: updated.status });
   }
 );
 
-// PATCH /orders/:id/note (ADMIN) — notas públicas/admin
+// =============== NOTES (ADMIN) ===============
 orders.patch("/:id/note", requireAdmin, async (req: Request, res: Response) => {
-  const id = req.params.id;
   const Body = z.object({
-    note: z.string().optional(),
-    adminNote: z.string().optional(),
+    note: z.string().max(2000).optional().nullable(),
+    adminNote: z.string().max(4000).optional().nullable(),
   });
   const { note, adminNote } = Body.parse(req.body);
+  const id = req.params.id;
 
-  const up = await prisma.orderInquiry.update({
+  await prisma.orderInquiry.update({
     where: { id },
-    data: { note: note ?? null, adminNote: adminNote ?? null },
-    include: buildOrderInclude(),
+    data: {
+      note: note ?? null,
+      adminNote: adminNote ?? null,
+    },
   });
 
-  res.json(up);
-});
-
-// POST /orders (público) — cria um pedido/inquiry com cliente/endereço/itens
-orders.post("/", async (req: Request, res: Response) => {
-  const Body = z.object({
-    customer: z.object({
-      name: z.string().min(2),
-      email: z.string().email(),
-      phone: z.string().optional(),
-      marketingOptIn: z.boolean().default(false),
-      address: z
-        .object({
-          line1: z.string().min(1),
-          line2: z.string().optional(),
-          city: z.string().min(1),
-          state: z.string().optional(),
-          postalCode: z.string().optional(),
-          country: z.string().min(2),
-        })
-        .optional(),
-    }),
-    note: z.string().optional(),
-    recurrence: z.string().optional(),
-    items: z
-      .array(
-        z.object({
-          productId: z.string().min(1),
-          quantity: z.number().int().positive(),
-          unitPrice: z.number().nonnegative(),
-        })
-      )
-      .min(1),
-  });
-
-  const body = Body.parse(req.body);
-
-  const created = await prisma.$transaction(
-    async (tx: Prisma.TransactionClient) => {
-      // upsert customer por email
-      const customer = await tx.customer.upsert({
-        where: { email: body.customer.email },
-        update: {
-          name: body.customer.name,
-          phone: body.customer.phone ?? null,
-          marketingOptIn: body.customer.marketingOptIn,
-        },
-        create: {
-          name: body.customer.name,
-          email: body.customer.email,
-          phone: body.customer.phone ?? null,
-          marketingOptIn: body.customer.marketingOptIn,
-        },
-      });
-
-      // endereço opcional
-      let addressId: string | null = null;
-      if (body.customer.address) {
-        const addr = await tx.address.create({
-          data: {
-            customerId: customer.id,
-            line1: body.customer.address.line1,
-            line2: body.customer.address.line2 ?? null,
-            city: body.customer.address.city,
-            state: body.customer.address.state ?? null,
-            postalCode: body.customer.address.postalCode ?? null,
-            country: body.customer.address.country,
-            isPrimary: true,
-          },
-        });
-        addressId = addr.id;
-      }
-
-      // cabeçalho do pedido
-      const order = await tx.orderInquiry.create({
-        data: {
-          customerId: customer.id,
-          addressId,
-          status: "RECEIVED",
-          note: body.note ?? null,
-          adminNote: null,
-          recurrence: body.recurrence ?? null,
-        },
-      });
-
-      // itens (Decimal: pode enviar number diretamente no Prisma v6)
-      await tx.orderItem.createMany({
-        data: body.items.map((it) => ({
-          orderId: order.id,
-          productId: it.productId,
-          quantity: it.quantity,
-          unitPrice: it.unitPrice, // sem Prisma.Decimal
-        })),
-      });
-
-      return order;
-    }
-  );
-
-  const full = await prisma.orderInquiry.findUnique({
-    where: { id: created.id },
-    include: buildOrderInclude(),
-  });
-
-  res.status(201).json(full);
+  res.json({ ok: true });
 });
