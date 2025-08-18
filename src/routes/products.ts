@@ -1,3 +1,4 @@
+// src/routes/products.ts
 import { Router } from "express";
 import { prisma } from "../lib/prisma";
 import { z } from "zod";
@@ -10,6 +11,11 @@ export const products = Router();
 products.get("/_ping", (_req, res) =>
   res.json({ ok: true, scope: "products-router" })
 );
+
+/** Toggle de recurso para (des)ativar escrita dos campos de visibilidade
+ *  Coloque FEATURE_VISIBILITY_FLAGS=1 no ambiente quando o schema tiver as colunas.
+ */
+const FEATURE_VIS = process.env.FEATURE_VISIBILITY_FLAGS === "1";
 
 /** helper: aceita http(s) OU caminho absoluto iniciando por "/" */
 const urlish = z
@@ -74,8 +80,15 @@ function computeSale(p: any) {
 
 /** serialização respeitando flags de visibilidade (no público) */
 function serializeProduct(p: any, isAdmin: boolean) {
-  const firstCat = p.categories[0]?.category ?? null;
+  const firstCat = p.categories?.[0]?.category ?? null;
   const sale = p.sale ?? computeSale(p);
+
+  // Se o Client não tiver as colunas, use defaults seguros
+  const visPrice = (p as any).visiblePrice ?? false;
+  const visPkg = (p as any).visiblePackageSize ?? true;
+  const visPdf = (p as any).visiblePdf ?? true;
+  const visImgs = (p as any).visibleImages ?? true;
+  const visDesc = (p as any).visibleDescription ?? true;
 
   const show = (flag: boolean) => (isAdmin ? true : !!flag);
 
@@ -83,13 +96,13 @@ function serializeProduct(p: any, isAdmin: boolean) {
     id: p.id,
     name: p.name,
     slug: p.slug,
-    description: show(p.visibleDescription) ? p.description : undefined,
-    price: show(p.visiblePrice) ? Number(p.price) : undefined,
+    description: show(visDesc) ? p.description : undefined,
+    price: show(visPrice) ? Number(p.price) : undefined,
     active: p.active,
     stock: p.stock,
     sortOrder: p.sortOrder,
-    packageSize: show(p.visiblePackageSize) ? p.packageSize : undefined,
-    pdfUrl: show(p.visiblePdf) ? p.pdfUrl : undefined,
+    packageSize: show(visPkg) ? p.packageSize : undefined,
+    pdfUrl: show(visPdf) ? p.pdfUrl : undefined,
     category: firstCat
       ? {
           id: firstCat.id,
@@ -104,21 +117,16 @@ function serializeProduct(p: any, isAdmin: boolean) {
             : null,
         }
       : null,
-    images: show(p.visibleImages)
-      ? (p.images as any[]).map((im: any) => im.url)
-      : [],
-    imageUrl: show(p.visibleImages)
-      ? p.images[0]?.url || p.imageUrl || null
-      : null,
+    images: show(visImgs) ? (p.images as any[]).map((im: any) => im.url) : [],
+    imageUrl: show(visImgs) ? p.images?.[0]?.url || p.imageUrl || null : null,
     sale, // { salePrice, percentOff/priceOff, ... } | null
-    // expõe flags para o Admin enxergar/editar
     visibility: isAdmin
       ? {
-          price: p.visiblePrice,
-          packageSize: p.visiblePackageSize,
-          pdf: p.visiblePdf,
-          images: p.visibleImages,
-          description: p.visibleDescription,
+          price: visPrice,
+          packageSize: visPkg,
+          pdf: visPdf,
+          images: visImgs,
+          description: visDesc,
         }
       : undefined,
   };
@@ -203,26 +211,31 @@ products.post("/", requireAdmin, async (req, res) => {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)/g, "");
 
-  const created = await prisma.product.create({
-    data: {
-      name: data.name,
-      slug,
-      description: data.description,
-      price: data.price,
-      stock: data.stock,
-      active: data.active ?? true,
-      packageSize: data.packageSize,
-      pdfUrl: data.pdfUrl,
-      imageUrl: data.imageUrl ?? "",
-      sortOrder: 0,
-      // visibilidade (se vierem, aplica; senão usa defaults do schema)
-      visiblePrice: data.visiblePrice ?? undefined,
-      visiblePackageSize: data.visiblePackageSize ?? undefined,
-      visiblePdf: data.visiblePdf ?? undefined,
-      visibleImages: data.visibleImages ?? undefined,
-      visibleDescription: data.visibleDescription ?? undefined,
-    },
-  });
+  // use 'any' para não travar tipagem quando o Client não tem as colunas
+  const createData: any = {
+    name: data.name,
+    slug,
+    description: data.description,
+    price: data.price,
+    stock: data.stock,
+    active: data.active ?? true,
+    packageSize: data.packageSize,
+    pdfUrl: data.pdfUrl,
+    imageUrl: data.imageUrl ?? "",
+    sortOrder: 0,
+  };
+
+  if (FEATURE_VIS) {
+    if (data.visiblePrice !== undefined) createData.visiblePrice = data.visiblePrice;
+    if (data.visiblePackageSize !== undefined)
+      createData.visiblePackageSize = data.visiblePackageSize;
+    if (data.visiblePdf !== undefined) createData.visiblePdf = data.visiblePdf;
+    if (data.visibleImages !== undefined) createData.visibleImages = data.visibleImages;
+    if (data.visibleDescription !== undefined)
+      createData.visibleDescription = data.visibleDescription;
+  }
+
+  const created = await prisma.product.create({ data: createData });
 
   if (data.categoryId) {
     await prisma.productCategory.create({
@@ -278,15 +291,16 @@ products.put("/:id", requireAdmin, async (req, res) => {
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/(^-|-$)/g, "");
   }
-  // flags de visibilidade se vierem
-  if (data.visiblePrice !== undefined) patch.visiblePrice = data.visiblePrice;
-  if (data.visiblePackageSize !== undefined)
-    patch.visiblePackageSize = data.visiblePackageSize;
-  if (data.visiblePdf !== undefined) patch.visiblePdf = data.visiblePdf;
-  if (data.visibleImages !== undefined)
-    patch.visibleImages = data.visibleImages;
-  if (data.visibleDescription !== undefined)
-    patch.visibleDescription = data.visibleDescription;
+
+  if (FEATURE_VIS) {
+    if (data.visiblePrice !== undefined) patch.visiblePrice = data.visiblePrice;
+    if (data.visiblePackageSize !== undefined)
+      patch.visiblePackageSize = data.visiblePackageSize;
+    if (data.visiblePdf !== undefined) patch.visiblePdf = data.visiblePdf;
+    if (data.visibleImages !== undefined) patch.visibleImages = data.visibleImages;
+    if (data.visibleDescription !== undefined)
+      patch.visibleDescription = data.visibleDescription;
+  }
 
   await prisma.product.update({ where: { id }, data: patch });
 
@@ -416,6 +430,14 @@ products.patch("/:id/unarchive", requireAdmin, async (req, res) => {
 
 /** Toggle de visibilidade (ADMIN) */
 products.patch("/:id/visibility", requireAdmin, async (req, res) => {
+  if (!FEATURE_VIS) {
+    return res.status(409).json({
+      error: "visibility_flags_not_enabled",
+      message:
+        "Visibility flags are not enabled in this environment. Set FEATURE_VISIBILITY_FLAGS=1 after migrating schema.",
+    });
+  }
+
   const Body = z.object({
     price: z.boolean().optional(),
     packageSize: z.boolean().optional(),
@@ -436,16 +458,16 @@ products.patch("/:id/visibility", requireAdmin, async (req, res) => {
     where: { id: req.params.id },
     data,
   });
-  res.json({
-    ok: true,
-    visibility: {
-      price: updated.visiblePrice,
-      packageSize: updated.visiblePackageSize,
-      pdf: updated.visiblePdf,
-      images: updated.visibleImages,
-      description: updated.visibleDescription,
-    },
-  });
+
+  const vis = {
+    price: (updated as any).visiblePrice ?? false,
+    packageSize: (updated as any).visiblePackageSize ?? true,
+    pdf: (updated as any).visiblePdf ?? true,
+    images: (updated as any).visibleImages ?? true,
+    description: (updated as any).visibleDescription ?? true,
+  };
+
+  res.json({ ok: true, visibility: vis });
 });
 
 /** Agendar/atualizar promoção (sale) — percentOff OU priceOff */
@@ -498,7 +520,6 @@ products.put("/:id/sale", requireAdmin, async (req, res) => {
 
 /** =========================
  *  GET "/:idOrSlug"  (detalhe)
- *  ====== DEIXE POR ÚLTIMO!
  *  ========================= */
 products.get("/:idOrSlug", async (req, res) => {
   const idOrSlug = req.params.idOrSlug;
