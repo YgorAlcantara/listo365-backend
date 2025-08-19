@@ -1,6 +1,7 @@
+// src/routes/auth.ts
 import { Router } from "express";
 import { prisma } from "../lib/prisma";
-import bcrypt from "bcryptjs";
+import bcrypt from "bcrypt"; // <- usa bcrypt (não bcryptjs)
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { requireAuth } from "../middleware/auth";
@@ -26,7 +27,6 @@ auth.post("/login", async (req, res) => {
     const secret = process.env.JWT_SECRET;
     if (!secret) return res.status(500).json({ error: "JWT secret not set" });
 
-    // inclui sub/uid para compatibilidade, e também email/role
     const token = jwt.sign(
       { sub: user.id, uid: user.id, email: user.email, role: user.role },
       secret,
