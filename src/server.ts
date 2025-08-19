@@ -18,7 +18,6 @@ const app = express();
 const envOrigins = process.env.FRONTEND_ORIGIN?.split(",")
   .map((s) => s.trim())
   .filter(Boolean);
-
 app.use(
   cors({
     origin: envOrigins && envOrigins.length ? envOrigins : true,
@@ -38,6 +37,47 @@ app.get("/health", async (_req, res) => {
   } catch (e) {
     console.error("health db error", e);
     return res.status(500).json({ ok: false, db: false });
+  }
+});
+
+/**
+ * /ready — verifica DB e (opcionalmente) dispara o seed.
+ * Use:
+ *   GET /ready?token=SEU_TOKEN          (só health)
+ *   GET /ready?token=SEU_TOKEN&seed=1   (health + seed)
+ * Controle por env:
+ *   READY_TOKEN (opcional)
+ *   SEED_ON_READY=1   => seed automático sempre que /ready for chamado
+ */
+app.get("/ready", async (req, res) => {
+  try {
+    const token = String(req.query.token || "");
+    if (process.env.READY_TOKEN && token !== process.env.READY_TOKEN) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+
+    await prisma.$queryRaw`SELECT 1`;
+
+    let seeded = false;
+    const shouldSeed =
+      process.env.SEED_ON_READY === "1" || String(req.query.seed || "") === "1";
+
+    if (shouldSeed) {
+      // Caminho relativo a dist/src/server.js -> dist/prisma/seed.js
+      const mod: any = await import("../prisma/seed.js");
+      const fn = mod?.runSeed || mod?.default;
+      if (typeof fn === "function") {
+        await fn();
+        seeded = true;
+      } else {
+        console.warn("Seed module loaded but runSeed() not found");
+      }
+    }
+
+    return res.json({ ok: true, db: true, seeded });
+  } catch (e) {
+    console.error("ready failed", e);
+    return res.status(500).json({ ok: false, error: "ready_failed" });
   }
 });
 
