@@ -2,15 +2,16 @@
   "name": "listo365-backend",
   "private": true,
   "version": "1.0.0",
-  "main": "dist/src/server.js",
+  "main": "dist/index.js",
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/src/server.js",
-    "start:render": "prisma migrate deploy && node dist/src/server.js",
-    "prisma:generate": "prisma generate",
     "db:seed": "ts-node prisma/seed.ts",
-    "seed:js": "node dist/prisma/seed.js"
+    "start": "node dist/src/server.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate deploy",
+    "start:render": "prisma db push && node dist/src/server.js",
+    "start:render:seed": "prisma db push && node dist/prisma/seed.js && node dist/src/server.js"
   },
   "dependencies": {
     "@prisma/client": "^6.14.0",
@@ -22,6 +23,7 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1",
     "pg": "^8.12.0",
+    "resend": "^6.0.1",
     "zod": "^3.25.76"
   },
   "devDependencies": {
