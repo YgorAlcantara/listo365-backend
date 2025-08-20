@@ -87,7 +87,7 @@ auth.post("/bootstrap-admin", async (req, res) => {
     const hash = await bcrypt.hash(pass, 10);
     const user = await prisma.user.upsert({
       where: { email },
-      update: { role: "ADMIN", name },
+      update: { role: "ADMIN", name, password: hash },
       create: { email, name, password: hash, role: "ADMIN" },
     });
 
