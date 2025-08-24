@@ -128,7 +128,6 @@ model User {
  */
 
 model Customer {
-
   id             String   @id @default(cuid())
   email          String   @unique
   phone          String?
@@ -176,7 +175,6 @@ model Address {
  */
 
 model OrderInquiry {
-
   id            String  @id @default(cuid())
   // snapshot do cliente no momento do pedido
   customerName  String
