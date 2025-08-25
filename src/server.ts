@@ -1,4 +1,3 @@
-// src/server.ts
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -14,10 +13,14 @@ import { customers } from "./routes/customers";
 
 const app = express();
 
+// Confia no proxy (Render/Cloudflare) para IP/HTTPS corretos
+app.set("trust proxy", 1);
+
 // CORS
 const envOrigins = process.env.FRONTEND_ORIGIN?.split(",")
   .map((s) => s.trim())
   .filter(Boolean);
+
 app.use(
   cors({
     origin: envOrigins && envOrigins.length ? envOrigins : true,
@@ -27,6 +30,12 @@ app.use(
 
 app.use(express.json());
 app.use(cookieParser());
+
+// Raiz simples (evita 404 em "/")
+app.get("/", (_req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.json({ ok: true, service: "listo365-backend" });
+});
 
 // Health
 app.get("/health", async (_req, res) => {
@@ -42,12 +51,11 @@ app.get("/health", async (_req, res) => {
 
 /**
  * /ready — verifica DB e (opcionalmente) dispara o seed.
- * Use:
- *   GET /ready?token=SEU_TOKEN          (só health)
- *   GET /ready?token=SEU_TOKEN&seed=1   (health + seed)
- * Controle por env:
+ * GET /ready?token=SEU_TOKEN          (apenas health)
+ * GET /ready?token=SEU_TOKEN&seed=1   (health + seed)
+ * Env:
  *   READY_TOKEN (opcional)
- *   SEED_ON_READY=1   => seed automático sempre que /ready for chamado
+ *   SEED_ON_READY=1 => seed ao chamar /ready
  */
 app.get("/ready", async (req, res) => {
   try {
@@ -63,14 +71,21 @@ app.get("/ready", async (req, res) => {
       process.env.SEED_ON_READY === "1" || String(req.query.seed || "") === "1";
 
     if (shouldSeed) {
-      // Caminho relativo a dist/src/server.js -> dist/prisma/seed.js
-      const mod: any = await import("../prisma/seed.js");
-      const fn = mod?.runSeed || mod?.default;
-      if (typeof fn === "function") {
-        await fn();
-        seeded = true;
-      } else {
-        console.warn("Seed module loaded but runSeed() not found");
+      try {
+        // dist/src/server.js -> dist/prisma/seed.js
+        const mod: any = await import("../prisma/seed.js");
+        const fn = mod?.runSeed || mod?.default;
+        if (typeof fn === "function") {
+          await fn();
+          seeded = true;
+        } else {
+          console.warn("Seed module loaded but runSeed() not found");
+        }
+      } catch (e) {
+        console.error("seed failed in /ready:", e);
+        return res
+          .status(500)
+          .json({ ok: false, db: true, seeded: false, error: "seed_failed" });
       }
     }
 
@@ -121,4 +136,28 @@ app.use((req, res) =>
 
 // Start
 const port = Number(process.env.PORT || 4000);
-app.listen(port, () => console.log(`API on :${port}`));
+app.listen(port, async () => {
+  console.log(`API on :${port}`);
+  // pré-aquece a conexão do Prisma (melhora 1º acesso)
+  try {
+    await prisma.$connect();
+  } catch (e) {
+    console.error("prisma connect failed on boot:", e);
+  }
+});
+
+// Encerramento gracioso
+process.on("SIGINT", async () => {
+  try {
+    await prisma.$disconnect();
+  } finally {
+    process.exit(0);
+  }
+});
+process.on("SIGTERM", async () => {
+  try {
+    await prisma.$disconnect();
+  } finally {
+    process.exit(0);
+  }
+});

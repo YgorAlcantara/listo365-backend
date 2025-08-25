@@ -12,7 +12,7 @@ pnpm-debug.log*
 *.log
 
 # env (nunca commitar segredos)
-#.env
+.env
 .env.*
 !.env.example
 
