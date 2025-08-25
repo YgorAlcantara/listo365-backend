@@ -12,10 +12,9 @@ products.get("/_ping", (_req, res) =>
   res.json({ ok: true, scope: "products-router" })
 );
 
-/** Toggle de recurso para (des)ativar escrita dos campos de visibilidade
- *  Coloque FEATURE_VISIBILITY_FLAGS=1 no ambiente quando o schema tiver as colunas.
- */
+/** Feature flags */
 const FEATURE_VIS = process.env.FEATURE_VISIBILITY_FLAGS === "1";
+const FEATURE_VAR = process.env.FEATURE_VARIANTS === "1";
 
 /** helper: aceita http(s) OU caminho absoluto iniciando por "/" */
 const urlish = z
@@ -25,7 +24,7 @@ const urlish = z
     'Must be an http(s) URL or a path starting with "/"'
   );
 
-// --- helper p/ checar se é admin quando ?all=1 ---
+/** --- helper p/ checar ADMIN quando ?all=1 --- */
 function isAdminFromReq(req: any): boolean {
   try {
     const h = req.headers?.authorization || "";
@@ -33,7 +32,7 @@ function isAdminFromReq(req: any): boolean {
     const token = h.slice(7);
     const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as any;
     const role = decoded?.role ?? "USER";
-    const id = decoded?.sub ?? decoded?.uid; // compat
+    const id = decoded?.sub ?? decoded?.uid;
     return !!id && role === "ADMIN";
   } catch {
     return false;
@@ -50,7 +49,6 @@ function computeSale(p: any) {
       now <= new Date(pr.endsAt) &&
       (pr.percentOff || pr.priceOff)
   );
-
   if (!actives.length) return null;
 
   const base = Number(p.price);
@@ -66,7 +64,6 @@ function computeSale(p: any) {
       best = pr;
     }
   }
-
   if (!best || bestPrice >= base) return null;
   return {
     title: best.title,
@@ -83,7 +80,7 @@ function serializeProduct(p: any, isAdmin: boolean) {
   const firstCat = p.categories?.[0]?.category ?? null;
   const sale = p.sale ?? computeSale(p);
 
-  // Se o Client não tiver as colunas, use defaults seguros
+  // Defaults seguros se colunas não existem
   const visPrice = (p as any).visiblePrice ?? false;
   const visPkg = (p as any).visiblePackageSize ?? true;
   const visPdf = (p as any).visiblePdf ?? true;
@@ -91,6 +88,19 @@ function serializeProduct(p: any, isAdmin: boolean) {
   const visDesc = (p as any).visibleDescription ?? true;
 
   const show = (flag: boolean) => (isAdmin ? true : !!flag);
+
+  // variants (se existirem)
+  const variants = Array.isArray(p.variants)
+    ? (p.variants as any[]).map((v) => ({
+        id: v.id,
+        name: v.name,
+        price: show(visPrice) ? Number(v.price) : undefined,
+        stock: v.stock,
+        active: v.active,
+        sortOrder: v.sortOrder ?? 0,
+        sku: v.sku ?? undefined,
+      }))
+    : undefined;
 
   return {
     id: p.id,
@@ -119,7 +129,7 @@ function serializeProduct(p: any, isAdmin: boolean) {
       : null,
     images: show(visImgs) ? (p.images as any[]).map((im: any) => im.url) : [],
     imageUrl: show(visImgs) ? p.images?.[0]?.url || p.imageUrl || null : null,
-    sale, // { salePrice, percentOff/priceOff, ... } | null
+    sale,
     visibility: isAdmin
       ? {
           price: visPrice,
@@ -129,11 +139,12 @@ function serializeProduct(p: any, isAdmin: boolean) {
           description: visDesc,
         }
       : undefined,
+    variants, // só vem se feature tiver populado
   };
 }
 
 /** =========================
- *  GET "/" (lista pública; ?q, ?sort; ?all=1 só p/ ADMIN)
+ *  GET "/" (lista; ?q, ?sort; ?all=1 p/ ADMIN)
  *  ========================= */
 products.get("/", async (req, res) => {
   const q = String(req.query.q || "").trim();
@@ -162,17 +173,23 @@ products.get("/", async (req, res) => {
   const orderBy =
     ORDER_MAP[sortParam as keyof typeof ORDER_MAP] ?? ORDER_MAP.sortOrder;
 
+  // include condicional de variants
+  const include: any = {
+    images: { orderBy: { sortOrder: "asc" as const } },
+    categories: {
+      include: { category: { include: { parent: true } } },
+      take: 1,
+    },
+    promotions: true,
+  };
+  if (FEATURE_VAR) {
+    include.variants = { orderBy: { sortOrder: "asc" as const } };
+  }
+
   const list = await prisma.product.findMany({
     where,
     orderBy: [orderBy, { createdAt: "desc" as const }],
-    include: {
-      images: { orderBy: { sortOrder: "asc" as const } },
-      categories: {
-        include: { category: { include: { parent: true } } },
-        take: 1,
-      },
-      promotions: true,
-    },
+    include,
   });
 
   res.json(
@@ -183,69 +200,87 @@ products.get("/", async (req, res) => {
 });
 
 /** payload de criação/edição */
+const VisibilityShape = z
+  .object({
+    price: z.boolean().optional(),
+    packageSize: z.boolean().optional(),
+    pdf: z.boolean().optional(),
+    images: z.boolean().optional(),
+    description: z.boolean().optional(),
+  })
+  .partial()
+  .optional();
+
+const VariantShape = z.object({
+  id: z.string().optional(),
+  name: z.string().min(1),
+  price: z.coerce.number().nonnegative(),
+  stock: z.coerce.number().int().min(0),
+  sortOrder: z.coerce.number().int().optional().default(0),
+  active: z.boolean().optional().default(true),
+  sku: z.string().optional(),
+});
+
 const Upsert = z.object({
   name: z.string().min(2),
   description: z.string().min(2),
-  price: z.number().positive(),
-  stock: z.number().int().nonnegative(),
+  price: z.coerce.number().nonnegative(), // ✅ permite 0
+  stock: z.coerce.number().int().min(0),
   active: z.boolean().optional().default(true),
   packageSize: z.string().min(1).max(100).optional(),
   pdfUrl: urlish.optional(),
-  images: z.array(urlish).min(1).max(10).optional(),
+  images: z.array(urlish).max(10).optional(),
   categoryId: z.string().min(1).optional(),
   imageUrl: urlish.optional(),
-
-  // flags de visibilidade (opcionais no create/update)
-  visiblePrice: z.boolean().optional(),
-  visiblePackageSize: z.boolean().optional(),
-  visiblePdf: z.boolean().optional(),
-  visibleImages: z.boolean().optional(),
-  visibleDescription: z.boolean().optional(),
+  // novos
+  visibility: VisibilityShape, // { price, packageSize, pdf, images, description }
+  variants: z.array(VariantShape).optional(), // tamanhos/opções
 });
 
 /** Criar (ADMIN) */
 products.post("/", requireAdmin, async (req, res) => {
-  const data = Upsert.parse(req.body);
-  const slug = data.name
+  const body = Upsert.parse(req.body);
+  const slug = body.name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)/g, "");
 
-  // use 'any' para não travar tipagem quando o Client não tem as colunas
   const createData: any = {
-    name: data.name,
+    name: body.name,
     slug,
-    description: data.description,
-    price: data.price,
-    stock: data.stock,
-    active: data.active ?? true,
-    packageSize: data.packageSize,
-    pdfUrl: data.pdfUrl,
-    imageUrl: data.imageUrl ?? "",
+    description: body.description,
+    price: body.price,
+    stock: body.stock,
+    active: body.active ?? true,
+    packageSize: body.packageSize,
+    pdfUrl: body.pdfUrl,
+    imageUrl: body.imageUrl ?? "",
     sortOrder: 0,
   };
 
-  if (FEATURE_VIS) {
-    if (data.visiblePrice !== undefined) createData.visiblePrice = data.visiblePrice;
-    if (data.visiblePackageSize !== undefined)
-      createData.visiblePackageSize = data.visiblePackageSize;
-    if (data.visiblePdf !== undefined) createData.visiblePdf = data.visiblePdf;
-    if (data.visibleImages !== undefined) createData.visibleImages = data.visibleImages;
-    if (data.visibleDescription !== undefined)
-      createData.visibleDescription = data.visibleDescription;
+  // mapear visibility -> colunas (se habilitado)
+  if (FEATURE_VIS && body.visibility) {
+    const v = body.visibility;
+    if (v.price !== undefined) createData.visiblePrice = v.price;
+    if (v.packageSize !== undefined)
+      createData.visiblePackageSize = v.packageSize;
+    if (v.pdf !== undefined) createData.visiblePdf = v.pdf;
+    if (v.images !== undefined) createData.visibleImages = v.images;
+    if (v.description !== undefined)
+      createData.visibleDescription = v.description;
   }
 
   const created = await prisma.product.create({ data: createData });
 
-  if (data.categoryId) {
+  if (body.categoryId) {
     await prisma.productCategory.create({
-      data: { productId: created.id, categoryId: data.categoryId },
+      data: { productId: created.id, categoryId: body.categoryId },
     });
   }
 
-  if (data.images?.length) {
+  if (body.images?.length) {
     await prisma.productImage.createMany({
-      data: data.images.map((url, i) => ({
+      data: body.images.map((url, i) => ({
         productId: created.id,
         url,
         sortOrder: (i + 1) * 10,
@@ -253,18 +288,39 @@ products.post("/", requireAdmin, async (req, res) => {
     });
   }
 
+  // Variants (opcional + feature flag)
+  if (FEATURE_VAR && body.variants && body.variants.length) {
+    const pv = (prisma as any).productVariant;
+    if (pv) {
+      await pv.createMany({
+        data: body.variants.map((v, i) => ({
+          productId: created.id,
+          name: v.name,
+          price: v.price,
+          stock: v.stock,
+          sortOrder: v.sortOrder ?? (i + 1) * 10,
+          active: v.active ?? true,
+          sku: v.sku ?? null,
+        })),
+      });
+    }
+  }
+
+  const include: any = {
+    images: { orderBy: { sortOrder: "asc" as const } },
+    categories: {
+      include: { category: { include: { parent: true } } },
+      take: 1,
+    },
+    promotions: true,
+  };
+  if (FEATURE_VAR)
+    include.variants = { orderBy: { sortOrder: "asc" as const } };
+
   const full = await prisma.product.findUnique({
     where: { id: created.id },
-    include: {
-      images: { orderBy: { sortOrder: "asc" as const } },
-      categories: {
-        include: { category: { include: { parent: true } } },
-        take: 1,
-      },
-      promotions: true,
-    },
+    include,
   });
-
   res
     .status(201)
     .json(serializeProduct({ ...full!, sale: computeSale(full) }, true));
@@ -272,52 +328,51 @@ products.post("/", requireAdmin, async (req, res) => {
 
 /** Atualizar (ADMIN) */
 products.put("/:id", requireAdmin, async (req, res) => {
-  const data = Upsert.partial().parse(req.body);
+  const body = Upsert.partial().parse(req.body);
   const id = req.params.id;
 
   const patch: any = {
-    description: data.description,
-    price: data.price,
-    stock: data.stock,
-    active: data.active,
-    packageSize: data.packageSize,
-    pdfUrl: data.pdfUrl,
-    imageUrl: data.imageUrl,
+    description: body.description,
+    price: body.price,
+    stock: body.stock,
+    active: body.active,
+    packageSize: body.packageSize,
+    pdfUrl: body.pdfUrl,
+    imageUrl: body.imageUrl,
   };
-  if (data.name) {
-    patch.name = data.name;
-    patch.slug = data.name
+  if (body.name) {
+    patch.name = body.name;
+    patch.slug = body.name
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/(^-|-$)/g, "");
   }
 
-  if (FEATURE_VIS) {
-    if (data.visiblePrice !== undefined) patch.visiblePrice = data.visiblePrice;
-    if (data.visiblePackageSize !== undefined)
-      patch.visiblePackageSize = data.visiblePackageSize;
-    if (data.visiblePdf !== undefined) patch.visiblePdf = data.visiblePdf;
-    if (data.visibleImages !== undefined) patch.visibleImages = data.visibleImages;
-    if (data.visibleDescription !== undefined)
-      patch.visibleDescription = data.visibleDescription;
+  if (FEATURE_VIS && body.visibility) {
+    const v = body.visibility;
+    if (v.price !== undefined) patch.visiblePrice = v.price;
+    if (v.packageSize !== undefined) patch.visiblePackageSize = v.packageSize;
+    if (v.pdf !== undefined) patch.visiblePdf = v.pdf;
+    if (v.images !== undefined) patch.visibleImages = v.images;
+    if (v.description !== undefined) patch.visibleDescription = v.description;
   }
 
   await prisma.product.update({ where: { id }, data: patch });
 
-  if (data.categoryId !== undefined) {
+  if (body.categoryId !== undefined) {
     await prisma.productCategory.deleteMany({ where: { productId: id } });
-    if (data.categoryId) {
+    if (body.categoryId) {
       await prisma.productCategory.create({
-        data: { productId: id, categoryId: data.categoryId },
+        data: { productId: id, categoryId: body.categoryId },
       });
     }
   }
 
-  if (data.images) {
+  if (body.images) {
     await prisma.productImage.deleteMany({ where: { productId: id } });
-    if (data.images.length) {
+    if (body.images.length) {
       await prisma.productImage.createMany({
-        data: data.images.map((url, i) => ({
+        data: body.images.map((url, i) => ({
           productId: id,
           url,
           sortOrder: (i + 1) * 10,
@@ -326,18 +381,39 @@ products.put("/:id", requireAdmin, async (req, res) => {
     }
   }
 
-  const full = await prisma.product.findUnique({
-    where: { id },
-    include: {
-      images: { orderBy: { sortOrder: "asc" as const } },
-      categories: {
-        include: { category: { include: { parent: true } } },
-        take: 1,
-      },
-      promotions: true,
-    },
-  });
+  // Variants (regrava simples: apaga e cria de novo)
+  if (FEATURE_VAR && body.variants) {
+    const pv = (prisma as any).productVariant;
+    if (pv) {
+      await pv.deleteMany({ where: { productId: id } });
+      if (body.variants.length) {
+        await pv.createMany({
+          data: body.variants.map((v: any, i: number) => ({
+            productId: id,
+            name: v.name,
+            price: v.price,
+            stock: v.stock,
+            sortOrder: v.sortOrder ?? (i + 1) * 10,
+            active: v.active ?? true,
+            sku: v.sku ?? null,
+          })),
+        });
+      }
+    }
+  }
 
+  const include: any = {
+    images: { orderBy: { sortOrder: "asc" as const } },
+    categories: {
+      include: { category: { include: { parent: true } } },
+      take: 1,
+    },
+    promotions: true,
+  };
+  if (FEATURE_VAR)
+    include.variants = { orderBy: { sortOrder: "asc" as const } };
+
+  const full = await prisma.product.findUnique({ where: { id }, include });
   res.json(serializeProduct({ ...full!, sale: computeSale(full) }, true));
 });
 
@@ -346,7 +422,6 @@ products.delete("/:id", requireAdmin, async (req, res) => {
   const id = req.params.id;
   try {
     const usage = await prisma.orderItem.count({ where: { productId: id } });
-
     if (usage > 0) {
       await prisma.product.update({ where: { id }, data: { active: false } });
       return res.status(200).json({
@@ -356,14 +431,21 @@ products.delete("/:id", requireAdmin, async (req, res) => {
           "Product is linked to orders and was archived (disabled) instead of deleted.",
       });
     }
-
-    await prisma.$transaction([
-      prisma.productImage.deleteMany({ where: { productId: id } }),
-      prisma.productCategory.deleteMany({ where: { productId: id } }),
-      prisma.promotion.deleteMany({ where: { productId: id } }),
-      prisma.product.delete({ where: { id } }),
-    ]);
-
+    await prisma.$transaction(
+      [
+        prisma.productImage.deleteMany({ where: { productId: id } }),
+        prisma.productCategory.deleteMany({ where: { productId: id } }),
+        prisma.promotion.deleteMany({ where: { productId: id } }),
+        ...(FEATURE_VAR
+          ? [
+              (prisma as any).productVariant?.deleteMany({
+                where: { productId: id },
+              }),
+            ]
+          : []),
+        prisma.product.delete({ where: { id } }),
+      ].filter(Boolean) as any
+    );
     return res.json({ ok: true, deleted: true });
   } catch (err) {
     console.error("delete product failed", err);
@@ -382,12 +464,21 @@ products.delete("/:id/hard", requireAdmin, async (req, res) => {
         message: "This product has related orders. Archive it instead.",
       });
     }
-    await prisma.$transaction([
-      prisma.productImage.deleteMany({ where: { productId: id } }),
-      prisma.productCategory.deleteMany({ where: { productId: id } }),
-      prisma.promotion.deleteMany({ where: { productId: id } }),
-      prisma.product.delete({ where: { id } }),
-    ]);
+    await prisma.$transaction(
+      [
+        prisma.productImage.deleteMany({ where: { productId: id } }),
+        prisma.productCategory.deleteMany({ where: { productId: id } }),
+        prisma.promotion.deleteMany({ where: { productId: id } }),
+        ...(FEATURE_VAR
+          ? [
+              (prisma as any).productVariant?.deleteMany({
+                where: { productId: id },
+              }),
+            ]
+          : []),
+        prisma.product.delete({ where: { id } }),
+      ].filter(Boolean) as any
+    );
     return res.json({ ok: true, deleted: true });
   } catch (err) {
     console.error("hard delete failed", err);
@@ -397,7 +488,7 @@ products.delete("/:id/hard", requireAdmin, async (req, res) => {
 
 /** Ordenação (ADMIN) */
 products.patch("/:id/sort-order", requireAdmin, async (req, res) => {
-  const body = z.object({ sortOrder: z.number().int() }).parse(req.body);
+  const body = z.object({ sortOrder: z.coerce.number().int() }).parse(req.body);
   await prisma.product.update({
     where: { id: req.params.id },
     data: { sortOrder: body.sortOrder },
@@ -407,20 +498,23 @@ products.patch("/:id/sort-order", requireAdmin, async (req, res) => {
 
 /** Arquivar / Desarquivar (ADMIN) */
 products.patch("/:id/archive", requireAdmin, async (req, res) => {
-  const id = req.params.id;
   try {
-    await prisma.product.update({ where: { id }, data: { active: false } });
+    await prisma.product.update({
+      where: { id: req.params.id },
+      data: { active: false },
+    });
     return res.json({ ok: true });
   } catch (err) {
     console.error("archive product failed", err);
     return res.status(500).json({ error: "archive_failed" });
   }
 });
-
 products.patch("/:id/unarchive", requireAdmin, async (req, res) => {
-  const id = req.params.id;
   try {
-    await prisma.product.update({ where: { id }, data: { active: true } });
+    await prisma.product.update({
+      where: { id: req.params.id },
+      data: { active: true },
+    });
     return res.json({ ok: true });
   } catch (err) {
     console.error("unarchive product failed", err);
@@ -428,7 +522,7 @@ products.patch("/:id/unarchive", requireAdmin, async (req, res) => {
   }
 });
 
-/** Toggle de visibilidade (ADMIN) */
+/** Toggle explícito (ADMIN) — opcional se preferir PATCH direto */
 products.patch("/:id/visibility", requireAdmin, async (req, res) => {
   if (!FEATURE_VIS) {
     return res.status(409).json({
@@ -437,7 +531,6 @@ products.patch("/:id/visibility", requireAdmin, async (req, res) => {
         "Visibility flags are not enabled in this environment. Set FEATURE_VISIBILITY_FLAGS=1 after migrating schema.",
     });
   }
-
   const Body = z.object({
     price: z.boolean().optional(),
     packageSize: z.boolean().optional(),
@@ -458,7 +551,6 @@ products.patch("/:id/visibility", requireAdmin, async (req, res) => {
     where: { id: req.params.id },
     data,
   });
-
   const vis = {
     price: (updated as any).visiblePrice ?? false,
     packageSize: (updated as any).visiblePackageSize ?? true,
@@ -466,56 +558,7 @@ products.patch("/:id/visibility", requireAdmin, async (req, res) => {
     images: (updated as any).visibleImages ?? true,
     description: (updated as any).visibleDescription ?? true,
   };
-
   res.json({ ok: true, visibility: vis });
-});
-
-/** Agendar/atualizar promoção (sale) — percentOff OU priceOff */
-products.put("/:id/sale", requireAdmin, async (req, res) => {
-  const id = req.params.id;
-  const Body = z
-    .object({
-      title: z.string().min(1).max(80).default("Sale"),
-      description: z.string().max(300).optional(),
-      percentOff: z.number().int().min(1).max(90).optional(),
-      priceOff: z.number().positive().optional(),
-      startsAt: z.string().datetime(),
-      endsAt: z.string().datetime(),
-      active: z.boolean().default(true),
-    })
-    .refine((b) => !!b.percentOff || !!b.priceOff, {
-      message: "Provide percentOff or priceOff",
-    });
-
-  const body = Body.parse(req.body);
-
-  await prisma.promotion.deleteMany({ where: { productId: id, active: true } });
-
-  const created = await prisma.promotion.create({
-    data: {
-      productId: id,
-      title: body.title,
-      description: body.description,
-      percentOff: body.percentOff ?? null,
-      priceOff: body.priceOff ?? null,
-      startsAt: new Date(body.startsAt),
-      endsAt: new Date(body.endsAt),
-      active: body.active,
-    },
-  });
-
-  res.json({
-    ok: true,
-    promotion: {
-      id: created.id,
-      title: created.title,
-      percentOff: created.percentOff ?? undefined,
-      priceOff: created.priceOff ? Number(created.priceOff) : undefined,
-      startsAt: created.startsAt,
-      endsAt: created.endsAt,
-      active: created.active,
-    },
-  });
 });
 
 /** =========================
@@ -524,36 +567,28 @@ products.put("/:id/sale", requireAdmin, async (req, res) => {
 products.get("/:idOrSlug", async (req, res) => {
   const idOrSlug = req.params.idOrSlug;
 
+  const include: any = {
+    images: { orderBy: { sortOrder: "asc" as const } },
+    categories: {
+      include: { category: { include: { parent: true } } },
+      take: 1,
+    },
+    promotions: true,
+  };
+  if (FEATURE_VAR)
+    include.variants = { orderBy: { sortOrder: "asc" as const } };
+
   const byId = await prisma.product.findUnique({
     where: { id: idOrSlug },
-    include: {
-      images: { orderBy: { sortOrder: "asc" as const } },
-      categories: {
-        include: { category: { include: { parent: true } } },
-        take: 1,
-      },
-      promotions: true,
-    },
+    include,
   });
-
   const bySlug = byId
     ? null
-    : await prisma.product.findUnique({
-        where: { slug: idOrSlug },
-        include: {
-          images: { orderBy: { sortOrder: "asc" as const } },
-          categories: {
-            include: { category: { include: { parent: true } } },
-            take: 1,
-          },
-          promotions: true,
-        },
-      });
+    : await prisma.product.findUnique({ where: { slug: idOrSlug }, include });
 
   const p: any = byId || bySlug;
   if (!p) return res.status(404).json({ error: "not_found" });
 
-  // se não for admin, produto inativo não é visível
   const wantAll = String(req.query.all || "0") === "1";
   const isAdmin = wantAll && isAdminFromReq(req);
   if (!isAdmin && !p.active)
