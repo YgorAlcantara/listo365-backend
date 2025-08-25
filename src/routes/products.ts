@@ -139,7 +139,7 @@ function serializeProduct(p: any, isAdmin: boolean) {
           description: visDesc,
         }
       : undefined,
-    variants, // só vem se feature tiver populado
+    variants, // só vem se tiver incluído
   };
 }
 
@@ -237,6 +237,36 @@ const Upsert = z.object({
   variants: z.array(VariantShape).optional(), // tamanhos/opções
 });
 
+// Aliases de tipos (completo x parcial)
+type UpsertAll = z.infer<typeof Upsert>;
+type UpsertPartial = Partial<UpsertAll>;
+
+/** Mapeia body.visibility (ou legacy visible*) para colunas do Product */
+function applyVisibilityToData(target: any, body: UpsertAll | UpsertPartial) {
+  if (!FEATURE_VIS) return; // não mexe se feature off
+
+  const v = (body as any).visibility;
+  if (v) {
+    if (v.price !== undefined) target.visiblePrice = v.price;
+    if (v.packageSize !== undefined) target.visiblePackageSize = v.packageSize;
+    if (v.pdf !== undefined) target.visiblePdf = v.pdf;
+    if (v.images !== undefined) target.visibleImages = v.images;
+    if (v.description !== undefined) target.visibleDescription = v.description;
+  }
+
+  // compat: se vierem campos antigos soltos
+  if ((body as any).visiblePrice !== undefined)
+    target.visiblePrice = (body as any).visiblePrice;
+  if ((body as any).visiblePackageSize !== undefined)
+    target.visiblePackageSize = (body as any).visiblePackageSize;
+  if ((body as any).visiblePdf !== undefined)
+    target.visiblePdf = (body as any).visiblePdf;
+  if ((body as any).visibleImages !== undefined)
+    target.visibleImages = (body as any).visibleImages;
+  if ((body as any).visibleDescription !== undefined)
+    target.visibleDescription = (body as any).visibleDescription;
+}
+
 /** Criar (ADMIN) */
 products.post("/", requireAdmin, async (req, res) => {
   const body = Upsert.parse(req.body);
@@ -258,17 +288,8 @@ products.post("/", requireAdmin, async (req, res) => {
     sortOrder: 0,
   };
 
-  // mapear visibility -> colunas (se habilitado)
-  if (FEATURE_VIS && body.visibility) {
-    const v = body.visibility;
-    if (v.price !== undefined) createData.visiblePrice = v.price;
-    if (v.packageSize !== undefined)
-      createData.visiblePackageSize = v.packageSize;
-    if (v.pdf !== undefined) createData.visiblePdf = v.pdf;
-    if (v.images !== undefined) createData.visibleImages = v.images;
-    if (v.description !== undefined)
-      createData.visibleDescription = v.description;
-  }
+  // visibilidade
+  applyVisibilityToData(createData, body);
 
   const created = await prisma.product.create({ data: createData });
 
@@ -314,8 +335,7 @@ products.post("/", requireAdmin, async (req, res) => {
     },
     promotions: true,
   };
-  if (FEATURE_VAR)
-    include.variants = { orderBy: { sortOrder: "asc" as const } };
+  if (FEATURE_VAR) include.variants = { orderBy: { sortOrder: "asc" as const } };
 
   const full = await prisma.product.findUnique({
     where: { id: created.id },
@@ -331,16 +351,15 @@ products.put("/:id", requireAdmin, async (req, res) => {
   const body = Upsert.partial().parse(req.body);
   const id = req.params.id;
 
-  const patch: any = {
-    description: body.description,
-    price: body.price,
-    stock: body.stock,
-    active: body.active,
-    packageSize: body.packageSize,
-    pdfUrl: body.pdfUrl,
-    imageUrl: body.imageUrl,
-  };
-  if (body.name) {
+  const patch: any = {};
+  if (body.description !== undefined) patch.description = body.description;
+  if (body.price !== undefined) patch.price = body.price;
+  if (body.stock !== undefined) patch.stock = body.stock;
+  if (body.active !== undefined) patch.active = body.active;
+  if (body.packageSize !== undefined) patch.packageSize = body.packageSize;
+  if (body.pdfUrl !== undefined) patch.pdfUrl = body.pdfUrl;
+  if (body.imageUrl !== undefined) patch.imageUrl = body.imageUrl;
+  if (body.name !== undefined) {
     patch.name = body.name;
     patch.slug = body.name
       .toLowerCase()
@@ -348,14 +367,8 @@ products.put("/:id", requireAdmin, async (req, res) => {
       .replace(/(^-|-$)/g, "");
   }
 
-  if (FEATURE_VIS && body.visibility) {
-    const v = body.visibility;
-    if (v.price !== undefined) patch.visiblePrice = v.price;
-    if (v.packageSize !== undefined) patch.visiblePackageSize = v.packageSize;
-    if (v.pdf !== undefined) patch.visiblePdf = v.pdf;
-    if (v.images !== undefined) patch.visibleImages = v.images;
-    if (v.description !== undefined) patch.visibleDescription = v.description;
-  }
+  // visibilidade
+  applyVisibilityToData(patch, body);
 
   await prisma.product.update({ where: { id }, data: patch });
 
@@ -381,7 +394,7 @@ products.put("/:id", requireAdmin, async (req, res) => {
     }
   }
 
-  // Variants (regrava simples: apaga e cria de novo)
+  // Variants (regrava simples: apaga e cria de novo se vier o array)
   if (FEATURE_VAR && body.variants) {
     const pv = (prisma as any).productVariant;
     if (pv) {
@@ -410,8 +423,7 @@ products.put("/:id", requireAdmin, async (req, res) => {
     },
     promotions: true,
   };
-  if (FEATURE_VAR)
-    include.variants = { orderBy: { sortOrder: "asc" as const } };
+  if (FEATURE_VAR) include.variants = { orderBy: { sortOrder: "asc" as const } };
 
   const full = await prisma.product.findUnique({ where: { id }, include });
   res.json(serializeProduct({ ...full!, sale: computeSale(full) }, true));
@@ -437,11 +449,7 @@ products.delete("/:id", requireAdmin, async (req, res) => {
         prisma.productCategory.deleteMany({ where: { productId: id } }),
         prisma.promotion.deleteMany({ where: { productId: id } }),
         ...(FEATURE_VAR
-          ? [
-              (prisma as any).productVariant?.deleteMany({
-                where: { productId: id },
-              }),
-            ]
+          ? [(prisma as any).productVariant?.deleteMany({ where: { productId: id } })]
           : []),
         prisma.product.delete({ where: { id } }),
       ].filter(Boolean) as any
@@ -470,11 +478,7 @@ products.delete("/:id/hard", requireAdmin, async (req, res) => {
         prisma.productCategory.deleteMany({ where: { productId: id } }),
         prisma.promotion.deleteMany({ where: { productId: id } }),
         ...(FEATURE_VAR
-          ? [
-              (prisma as any).productVariant?.deleteMany({
-                where: { productId: id },
-              }),
-            ]
+          ? [(prisma as any).productVariant?.deleteMany({ where: { productId: id } })]
           : []),
         prisma.product.delete({ where: { id } }),
       ].filter(Boolean) as any
@@ -575,8 +579,7 @@ products.get("/:idOrSlug", async (req, res) => {
     },
     promotions: true,
   };
-  if (FEATURE_VAR)
-    include.variants = { orderBy: { sortOrder: "asc" as const } };
+  if (FEATURE_VAR) include.variants = { orderBy: { sortOrder: "asc" as const } };
 
   const byId = await prisma.product.findUnique({
     where: { id: idOrSlug },
@@ -584,7 +587,10 @@ products.get("/:idOrSlug", async (req, res) => {
   });
   const bySlug = byId
     ? null
-    : await prisma.product.findUnique({ where: { slug: idOrSlug }, include });
+    : await prisma.product.findUnique({
+        where: { slug: idOrSlug },
+        include,
+      });
 
   const p: any = byId || bySlug;
   if (!p) return res.status(404).json({ error: "not_found" });
