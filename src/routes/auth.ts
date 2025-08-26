@@ -1,18 +1,22 @@
 // src/routes/auth.ts
 import { Router } from "express";
 import { prisma } from "../lib/prisma";
-import bcrypt from "bcrypt"; // <- usa bcrypt (não bcryptjs)
+import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
-import { requireAuth } from "../middleware/auth";
+import { requireAuth, AuthedRequest } from "../middleware/auth";
 
 export const auth = Router();
+
+/** sanity ping */
+auth.get("/_ping", (_req, res) => res.json({ ok: true, scope: "auth-router" }));
 
 const LoginSchema = z.object({
   email: z.string().email().max(254),
   password: z.string().min(6).max(200),
 });
 
+/** POST /auth/login */
 auth.post("/login", async (req, res) => {
   try {
     const body = LoginSchema.parse(req.body);
@@ -33,7 +37,7 @@ auth.post("/login", async (req, res) => {
       { expiresIn: "7d" }
     );
 
-    res.json({
+    return res.json({
       token,
       user: {
         id: user.id,
@@ -43,17 +47,16 @@ auth.post("/login", async (req, res) => {
       },
     });
   } catch (e: any) {
-    if (e?.name === "ZodError") {
+    if (e?.name === "ZodError")
       return res.status(400).json({ error: "Invalid payload" });
-    }
-    console.error(e);
-    res.status(500).json({ error: "Login failed" });
+    console.error("auth/login error:", e);
+    return res.status(500).json({ error: "Login failed" });
   }
 });
 
-/** Retorna dados do usuário autenticado */
-auth.get("/me", requireAuth, async (req, res) => {
-  const uid = (req as any).user?.id as string | undefined;
+/** GET /auth/me */
+auth.get("/me", requireAuth, async (req: AuthedRequest, res) => {
+  const uid = req.user?.id;
   if (!uid) return res.status(401).json({ error: "Unauthorized" });
 
   const user = await prisma.user.findUnique({
@@ -61,13 +64,10 @@ auth.get("/me", requireAuth, async (req, res) => {
     select: { id: true, email: true, name: true, role: true, createdAt: true },
   });
   if (!user) return res.status(401).json({ error: "User not found" });
-  res.json(user);
+  return res.json(user);
 });
 
-/**
- * Bootstrap de ADMIN (uso único):
- * Protegido por ADMIN_BOOTSTRAP_TOKEN (env). Use 1x e remova a env.
- */
+/** POST /auth/bootstrap-admin */
 auth.post("/bootstrap-admin", async (req, res) => {
   try {
     const provided = String(req.body?.token || "");
@@ -100,13 +100,13 @@ auth.post("/bootstrap-admin", async (req, res) => {
       { expiresIn: "7d" }
     );
 
-    res.json({
+    return res.json({
       ok: true,
       user: { id: user.id, email: user.email, role: user.role },
       token: jwtToken,
     });
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: "Bootstrap failed" });
+    console.error("bootstrap-admin error:", e);
+    return res.status(500).json({ error: "Bootstrap failed" });
   }
 });

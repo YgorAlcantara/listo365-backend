@@ -1,19 +1,23 @@
+// src/middleware/auth.ts
 import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { prisma } from "../lib/prisma";
 
+/** User object anexado ao request após autenticação */
 export type AuthedUser = {
   id: string;
   email?: string;
   role?: "ADMIN" | "USER" | string;
 };
 
+/** Request estendido para conter o usuário autenticado */
 export interface AuthedRequest extends Request {
   user?: AuthedUser;
 }
 
+/** Payload esperado no JWT */
 type TokenPayload = {
-  sub?: string; // subject atual
+  sub?: string; // subject (id do usuário)
   uid?: string; // compat com tokens antigos
   email?: string;
   role?: "ADMIN" | "USER" | string;
@@ -21,14 +25,24 @@ type TokenPayload = {
   exp?: number;
 };
 
+/** Extrai token do Header Authorization (Bearer) ou cookie "token" */
+function getTokenFromReq(req: Request): string | null {
+  const h = req.headers?.authorization || req.headers?.Authorization;
+  if (typeof h === "string" && h.toLowerCase().startsWith("bearer ")) {
+    return h.slice(7).trim();
+  }
+  // fallback opcional por cookie
+  const cookieToken = (req as any)?.cookies?.token as string | undefined;
+  return cookieToken || null;
+}
+
+/** Autentica qualquer usuário (ADMIN/USER) e injeta req.user */
 export function requireAuth(
   req: AuthedRequest,
   res: Response,
   next: NextFunction
 ) {
-  const header = req.headers.authorization ?? "";
-  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-
+  const token = getTokenFromReq(req);
   if (!token) return res.status(401).json({ error: "Unauthorized" });
 
   const secret = process.env.JWT_SECRET;
@@ -40,7 +54,6 @@ export function requireAuth(
     if (!id)
       return res.status(401).json({ error: "Invalid token (missing subject)" });
 
-    // Anexa o usuário ao request (sem forçar role aqui)
     req.user = { id, email: decoded.email, role: decoded.role };
     next();
   } catch {
@@ -48,12 +61,12 @@ export function requireAuth(
   }
 }
 
+/** Exige ADMIN: roda requireAuth e valida no banco a role === ADMIN */
 export async function requireAdmin(
   req: AuthedRequest,
   res: Response,
   next: NextFunction
 ) {
-  // Encadeia o requireAuth e depois valida no banco
   return requireAuth(req, res, async () => {
     try {
       const uid = req.user?.id;
@@ -68,7 +81,7 @@ export async function requireAdmin(
       if (dbUser.role !== "ADMIN")
         return res.status(403).json({ error: "Forbidden" });
 
-      // Mantém req.user alinhado ao banco
+      // normaliza req.user com dados atuais do banco
       req.user = {
         id: dbUser.id,
         email: dbUser.email ?? undefined,

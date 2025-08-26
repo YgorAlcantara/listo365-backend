@@ -6,7 +6,6 @@ import { z } from "zod";
 
 export const customers = Router();
 
-// sanity ping
 customers.get("/_ping", (_req, res) =>
   res.json({ ok: true, scope: "customers-router" })
 );
@@ -37,9 +36,7 @@ customers.get("/", requireAdmin, async (req: Request, res: Response) => {
       orderBy: { createdAt: "desc" },
       skip: (page - 1) * pageSize,
       take: pageSize,
-      include: {
-        addresses: { orderBy: { createdAt: "desc" } },
-      },
+      include: { addresses: { orderBy: { createdAt: "desc" } } },
     }),
   ]);
 
@@ -63,7 +60,6 @@ customers.get("/:id", requireAdmin, async (req: Request, res: Response) => {
               product: { select: { id: true, name: true, slug: true } },
             },
           },
-          // <-- aqui é "address", conforme seu schema OrderInquiry
           address: true,
         },
       },

@@ -5,8 +5,8 @@ generator client {
 
 datasource db {
   provider  = "postgresql"
-  url       = env("DATABASE_URL") // pooler (runtime)
-  directUrl = env("DIRECT_URL") // sem pooler (migrate)
+  url       = env("DATABASE_URL") // runtime (pooler)
+  directUrl = env("DIRECT_URL")   // migrations/seed (sem pooler)
 }
 
 /**
@@ -72,7 +72,7 @@ model Product {
   packageSize String?
   pdfUrl      String?
 
-  // Flags de visibilidade no site público
+  // Public visibility flags
   visiblePrice       Boolean @default(false)
   visiblePackageSize Boolean @default(true)
   visiblePdf         Boolean @default(true)
@@ -84,7 +84,7 @@ model Product {
   orderItems OrderItem[]
   images     ProductImage[]
 
-  // ⬅️ BACK-RELATION para variantes (resolve o 1º erro)
+  // Variants (1:N)
   variants ProductVariant[]
 
   @@index([active, sortOrder])
@@ -92,7 +92,6 @@ model Product {
   @@index([name])
 }
 
-// 🚀 NOVO: variantes de produto
 model ProductVariant {
   id        String  @id @default(cuid())
   product   Product @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: Cascade)
@@ -108,8 +107,7 @@ model ProductVariant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // ⬅️ BACK-RELATION para itens de pedido (resolve o 2º erro).
-  // Damos um nome explícito à relação para referenciar do outro lado.
+  // Back-relation para itens de pedido
   orderItems OrderItem[] @relation("VariantToOrderItems")
 
   @@index([productId])
@@ -167,7 +165,7 @@ model Customer {
 
   @@index([name])
   @@index([phone])
-  @@map("Contact") // mantém a tabela existente "Contact", mas no client vira prisma.customer
+  @@map("Contact") // mantém compat com tabela antiga "Contact"
 }
 
 model Address {
@@ -197,8 +195,9 @@ model Address {
  * ===========================
  */
 model OrderInquiry {
-  id            String  @id @default(cuid())
-  // snapshot do cliente no momento do pedido
+  id            String   @id @default(cuid())
+
+  // Customer snapshot
   customerName  String
   customerEmail String
   customerPhone String?
@@ -211,19 +210,19 @@ model OrderInquiry {
 
   items OrderItem[]
 
-  // relação com Customer (CRM)
+  // Customer relation (CRM)
   customer   Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull, onUpdate: Cascade)
   customerId String?
 
-  // endereço na sacola
+  // Shipping address (optional)
   address   Address? @relation("OrderInquiryToAddress", fields: [addressId], references: [id], onDelete: SetNull, onUpdate: Cascade)
   addressId String?
 
-  // recorrência opcional
+  // Optional recurrence
   recurrence   String?
   intervalDays Int?
 
-  // totais opcionais (como orçamento)
+  // Totals (as quote snapshot)
   subtotal Decimal @default(0) @db.Decimal(12, 2)
   total    Decimal @default(0) @db.Decimal(12, 2)
   currency String  @default("USD")
@@ -246,7 +245,7 @@ model OrderItem {
   quantity  Int
   unitPrice Decimal @db.Decimal(12, 2)
 
-  // opcional: vínculo com a variante + snapshot do nome (para histórico e UI)
+  // Variant (optional) + snapshot name
   variant     ProductVariant? @relation("VariantToOrderItems", fields: [variantId], references: [id], onDelete: SetNull, onUpdate: Cascade)
   variantId   String?
   variantName String?

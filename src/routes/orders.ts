@@ -3,11 +3,10 @@ import { Router, Request, Response } from "express";
 import { prisma } from "../lib/prisma";
 import { requireAdmin } from "../middleware/auth";
 import { z } from "zod";
-import { Prisma } from "@prisma/client"; // <<< ADICIONE ESTA LINHA
+import { Prisma } from "@prisma/client";
 
 export const orders = Router();
 
-// ping
 orders.get("/_ping", (_req, res) =>
   res.json({ ok: true, scope: "orders-router" })
 );
@@ -18,7 +17,6 @@ type OrderStatus =
   | "COMPLETED"
   | "REFUSED"
   | "CANCELLED";
-
 const STATUS_VALUES: OrderStatus[] = [
   "RECEIVED",
   "IN_PROGRESS",
@@ -29,16 +27,31 @@ const STATUS_VALUES: OrderStatus[] = [
 
 // ---------- helpers ----------
 async function applyStockDelta(
-  tx: Prisma.TransactionClient, // <<< AQUI: era typeof prisma
-  items: Array<{ productId: string; quantity: number }>,
+  tx: Prisma.TransactionClient,
+  items: Array<{
+    productId: string;
+    quantity: number;
+    variantId?: string | null;
+  }>,
   direction: "dec" | "inc"
 ) {
   for (const it of items) {
     const delta = direction === "dec" ? -it.quantity : it.quantity;
+    // stock do produto
     await tx.product.update({
       where: { id: it.productId },
       data: { stock: { increment: delta } },
     });
+    // se houver variante, ajusta também
+    if (it.variantId) {
+      const pv = (tx as any).productVariant;
+      if (pv) {
+        await pv.update({
+          where: { id: it.variantId },
+          data: { stock: { increment: delta } },
+        });
+      }
+    }
   }
 }
 
@@ -63,7 +76,6 @@ orders.get("/", requireAdmin, async (req: Request, res: Response) => {
   });
 
   const { q, status, page, pageSize } = Query.parse(req.query);
-
   const where: any = {};
   if (status) where.status = status;
   if (q && q.trim()) {
@@ -111,6 +123,7 @@ orders.get("/:id", requireAdmin, async (req: Request, res: Response) => {
       items: {
         include: {
           product: { select: { id: true, name: true, slug: true } },
+          variant: { select: { id: true, name: true, sku: true } },
         },
       },
     },
@@ -146,7 +159,9 @@ orders.post("/", async (req: Request, res: Response) => {
         z.object({
           productId: z.string().min(1),
           quantity: z.number().int().positive(),
-          unitPrice: z.number().nonnegative().default(0),
+          unitPrice: z.number().nonnegative().optional(), // pode vir ausente quando é "quote"
+          variantId: z.string().optional().nullable(),
+          variantName: z.string().optional().nullable(), // opcional (snapshot)
         })
       )
       .min(1),
@@ -155,7 +170,31 @@ orders.post("/", async (req: Request, res: Response) => {
   });
 
   const body = Body.parse(req.body);
-  const totals = calcTotals(body.items);
+
+  // define unitPrice fallback para cada item (se ausente) usando variant.price quando houver
+  const hydratedItems = await Promise.all(
+    body.items.map(async (it) => {
+      if (!it.variantId) {
+        return {
+          ...it,
+          unitPrice: typeof it.unitPrice === "number" ? it.unitPrice : 0,
+        };
+      }
+      const variant = await (prisma as any).productVariant?.findUnique({
+        where: { id: it.variantId },
+      });
+      const fallbackPrice = Number(variant?.price ?? 0);
+      const variantName = it.variantName ?? variant?.name ?? null;
+      return {
+        ...it,
+        unitPrice:
+          typeof it.unitPrice === "number" ? it.unitPrice : fallbackPrice,
+        variantName,
+      };
+    })
+  );
+
+  const totals = calcTotals(hydratedItems);
 
   const created = await prisma.$transaction(async (tx) => {
     const customer = await tx.customer.upsert({
@@ -201,29 +240,24 @@ orders.post("/", async (req: Request, res: Response) => {
         note: body.note ?? null,
         adminNote: null,
         recurrence: body.recurrence ?? null,
-
         // snapshot
         customerName: customer.name,
         customerEmail: customer.email,
         customerPhone: customer.phone ?? null,
-
         subtotal: totals.subtotal,
         total: totals.total,
         currency: "USD",
-
         items: {
-          create: body.items.map((it) => ({
+          create: hydratedItems.map((it) => ({
             productId: it.productId,
             quantity: it.quantity,
             unitPrice: it.unitPrice ?? 0,
+            variantId: it.variantId ?? null,
+            variantName: it.variantName ?? null,
           })),
         },
       },
-      include: {
-        customer: true,
-        address: true,
-        items: true,
-      },
+      include: { customer: true, address: true, items: true },
     });
 
     return order;
@@ -258,6 +292,7 @@ orders.patch(
           current.items.map((i) => ({
             productId: i.productId,
             quantity: i.quantity,
+            variantId: i.variantId ?? null,
           })),
           "dec"
         );
@@ -267,15 +302,13 @@ orders.patch(
           current.items.map((i) => ({
             productId: i.productId,
             quantity: i.quantity,
+            variantId: i.variantId ?? null,
           })),
           "inc"
         );
       }
 
-      return tx.orderInquiry.update({
-        where: { id },
-        data: { status: next },
-      });
+      return tx.orderInquiry.update({ where: { id }, data: { status: next } });
     });
 
     res.json({ ok: true, status: updated.status });
@@ -293,11 +326,7 @@ orders.patch("/:id/note", requireAdmin, async (req: Request, res: Response) => {
 
   await prisma.orderInquiry.update({
     where: { id },
-    data: {
-      note: note ?? null,
-      adminNote: adminNote ?? null,
-    },
+    data: { note: note ?? null, adminNote: adminNote ?? null },
   });
-
   res.json({ ok: true });
 });

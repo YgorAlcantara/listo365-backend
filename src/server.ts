@@ -1,3 +1,4 @@
+// src/server.ts
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -13,10 +14,10 @@ import { customers } from "./routes/customers";
 
 const app = express();
 
-// Confia no proxy (Render/Cloudflare) para IP/HTTPS corretos
+// Behind proxy/CDN (Render/Fly/Cloudflare/etc.)
 app.set("trust proxy", 1);
 
-// CORS
+// CORS (allow multiple origins via FRONTEND_ORIGIN separated by commas)
 const envOrigins = process.env.FRONTEND_ORIGIN?.split(",")
   .map((s) => s.trim())
   .filter(Boolean);
@@ -28,16 +29,17 @@ app.use(
   })
 );
 
-app.use(express.json());
+// Body & cookies
+app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 
-// Raiz simples (evita 404 em "/")
+// Root
 app.get("/", (_req, res) => {
   res.set("Cache-Control", "no-store");
   res.json({ ok: true, service: "listo365-backend" });
 });
 
-// Health
+// Health (DB ping only)
 app.get("/health", async (_req, res) => {
   res.set("Cache-Control", "no-store");
   try {
@@ -50,12 +52,13 @@ app.get("/health", async (_req, res) => {
 });
 
 /**
- * /ready — verifica DB e (opcionalmente) dispara o seed.
- * GET /ready?token=SEU_TOKEN          (apenas health)
- * GET /ready?token=SEU_TOKEN&seed=1   (health + seed)
+ * Readiness + optional seed
+ * GET /ready?token=YOUR_TOKEN
+ * GET /ready?token=YOUR_TOKEN&seed=1
+ *
  * Env:
- *   READY_TOKEN (opcional)
- *   SEED_ON_READY=1 => seed ao chamar /ready
+ * - READY_TOKEN (optional): if set, must match the query token
+ * - SEED_ON_READY=1 : always seeds on /ready (useful for first boot)
  */
 app.get("/ready", async (req, res) => {
   try {
@@ -72,14 +75,14 @@ app.get("/ready", async (req, res) => {
 
     if (shouldSeed) {
       try {
-        // dist/src/server.js -> dist/prisma/seed.js
+        // build output path: dist/prisma/seed.js
         const mod: any = await import("../prisma/seed.js");
-        const fn = mod?.runSeed || mod?.default;
+        const fn = mod?.runSeed || mod?.default || mod?.main;
         if (typeof fn === "function") {
           await fn();
           seeded = true;
         } else {
-          console.warn("Seed module loaded but runSeed() not found");
+          console.warn("Seed module loaded but no run function was found");
         }
       } catch (e) {
         console.error("seed failed in /ready:", e);
@@ -96,7 +99,7 @@ app.get("/ready", async (req, res) => {
   }
 });
 
-// Routers (ANTES do 404!)
+// Routers (order matters; define before 404)
 app.use("/auth", auth);
 app.use("/products", products);
 app.use("/orders", orders);
@@ -104,32 +107,36 @@ app.use("/promotions", promotions);
 app.use("/categories", categories);
 app.use("/customers", customers);
 
-// Rotas de diagnóstico (temporárias)
-app.get("/_routes", (_req, res) => {
-  const list: any[] = [];
-  // @ts-ignore
-  app._router.stack.forEach((m: any) => {
-    if (m.route) {
-      list.push({
-        path: m.route.path,
-        methods: Object.keys(m.route.methods).filter((k) => m.route.methods[k]),
-      });
-    } else if (m.name === "router" && m.handle?.stack) {
-      m.handle.stack.forEach((h: any) => {
-        if (h.route)
-          list.push({
-            path: h.route.path,
-            methods: Object.keys(h.route.methods).filter(
-              (k) => h.route.methods[k]
-            ),
-          });
-      });
-    }
+// Diagnostics (optional; keep only in dev)
+if (process.env.NODE_ENV !== "production") {
+  app.get("/_routes", (_req, res) => {
+    const list: any[] = [];
+    // @ts-ignore
+    app._router.stack.forEach((m: any) => {
+      if (m.route) {
+        list.push({
+          path: m.route.path,
+          methods: Object.keys(m.route.methods).filter(
+            (k) => m.route.methods[k]
+          ),
+        });
+      } else if (m.name === "router" && m.handle?.stack) {
+        m.handle.stack.forEach((h: any) => {
+          if (h.route)
+            list.push({
+              path: h.route.path,
+              methods: Object.keys(h.route.methods).filter(
+                (k) => h.route.methods[k]
+              ),
+            });
+        });
+      }
+    });
+    res.json(list);
   });
-  res.json(list);
-});
+}
 
-// 404 por último
+// 404
 app.use((req, res) =>
   res.status(404).json({ error: "not_found", path: req.path })
 );
@@ -137,16 +144,15 @@ app.use((req, res) =>
 // Start
 const port = Number(process.env.PORT || 4000);
 app.listen(port, async () => {
-  console.log(`API on :${port}`);
-  // pré-aquece a conexão do Prisma (melhora 1º acesso)
+  console.log(`API listening on :${port}`);
   try {
-    await prisma.$connect();
+    await prisma.$connect(); // warm connection
   } catch (e) {
     console.error("prisma connect failed on boot:", e);
   }
 });
 
-// Encerramento gracioso
+// Graceful shutdown
 process.on("SIGINT", async () => {
   try {
     await prisma.$disconnect();
