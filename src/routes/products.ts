@@ -7,19 +7,20 @@ import { requireAdmin } from "../middleware/auth";
 
 export const products = Router();
 
-/** Debug ping */
+/** Ping para debug */
 products.get("/_ping", (_req, res) =>
   res.json({ ok: true, scope: "products-router" })
 );
 
-// Feature flags (robustas): só habilita variantes se o Client tiver o model
-const HAS_VARIANT_MODEL =
-  !!(prisma as any)?._dmmf?.modelMap?.ProductVariant ||
-  !!(prisma as any).productVariant;
-const FEATURE_VIS =
-  (process.env.FEATURE_VISIBILITY_FLAGS || "1").trim() === "1";
-const FEATURE_VAR =
-  (process.env.FEATURE_VARIANTS || "0").trim() === "1" && HAS_VARIANT_MODEL;
+/**
+ * Feature flags:
+ * - Visibilidade e Variantes habilitadas por padrão (a não ser que esteja "0").
+ * - Variantes só ativas se os modelos existem no Prisma Client.
+ */
+const HAS_VARIANT_MODEL = Boolean((prisma as any).productVariant);
+const HAS_VARIANT_IMG_MODEL = Boolean((prisma as any).productVariantImage);
+const FEATURE_VIS = process.env.FEATURE_VISIBILITY_FLAGS !== "0";
+const FEATURE_VAR = process.env.FEATURE_VARIANTS !== "0" && HAS_VARIANT_MODEL;
 
 /** helper: aceita http(s) OU caminho absoluto iniciando por "/" */
 const urlish = z
@@ -94,16 +95,22 @@ function serializeProduct(p: any, isAdmin: boolean) {
 
   const show = (flag: boolean) => (isAdmin ? true : !!flag);
 
+  // Variantes (com capa + galeria da variante)
   const variants =
     FEATURE_VAR && Array.isArray(p.variants)
       ? (p.variants as any[]).map((v) => ({
           id: v.id,
           name: v.name,
-          price: show(visPrice) ? Number(v.price) : undefined, // hide price if not visible
+          price: show(visPrice) ? Number(v.price) : undefined,
           stock: v.stock,
           active: v.active,
           sortOrder: v.sortOrder ?? 0,
           sku: v.sku ?? undefined,
+          imageUrl: v.imageUrl ?? null,
+          images:
+            Array.isArray(v.images) && show(visImgs)
+              ? v.images.map((im: any) => im.url)
+              : [],
         }))
       : undefined;
 
@@ -184,8 +191,14 @@ products.get("/", async (req, res) => {
     },
     promotions: true,
   };
-  if (FEATURE_VAR)
-    include.variants = { orderBy: { sortOrder: "asc" as const } };
+  if (FEATURE_VAR) {
+    include.variants = {
+      orderBy: { sortOrder: "asc" as const },
+      include: HAS_VARIANT_IMG_MODEL
+        ? { images: { orderBy: { sortOrder: "asc" as const } } }
+        : undefined,
+    };
+  }
 
   const list = await prisma.product.findMany({
     where,
@@ -215,18 +228,19 @@ const VisibilityShape = z
 const VariantShape = z.object({
   id: z.string().optional(),
   name: z.string().min(1),
-  // tolerante a "", null, undefined
   price: z.coerce.number().nonnegative().catch(0),
   stock: z.coerce.number().int().min(0).catch(0),
   sortOrder: z.coerce.number().int().catch(0),
   active: z.coerce.boolean().catch(true),
   sku: z.string().optional(),
+  imageUrl: urlish.optional(), // capa opcional da variante
+  images: z.array(urlish).max(10).optional(), // galeria da variante
 });
 
 const Upsert = z.object({
   name: z.string().min(2),
   description: z.string().min(2),
-  price: z.coerce.number().nonnegative(), // aceita 0
+  price: z.coerce.number().nonnegative(),
   stock: z.coerce.number().int().min(0),
   active: z.boolean().optional().default(true),
   packageSize: z.string().min(1).max(100).optional(),
@@ -288,21 +302,32 @@ products.post("/", requireAdmin, async (req, res) => {
     });
   }
 
-  // Variants
+  // Variants: criar 1 a 1 para suportar nested images
   if (FEATURE_VAR && body.variants && body.variants.length) {
-    const pv = (prisma as any).productVariant;
-    if (pv) {
-      await pv.createMany({
-        data: body.variants.map((v, i) => ({
+    for (let i = 0; i < body.variants.length; i++) {
+      const v = body.variants[i];
+      const variant = await (prisma as any).productVariant.create({
+        data: {
           productId: created.id,
           name: v.name,
-          price: Number(v.price) || 0,
-          stock: Number.isFinite(v.stock as any) ? (v.stock as number) : 0,
+          price: v.price,
+          stock: v.stock,
           sortOrder: v.sortOrder ?? (i + 1) * 10,
           active: v.active ?? true,
           sku: v.sku ?? null,
-        })),
+          imageUrl: v.imageUrl ?? null,
+        },
+        select: { id: true },
       });
+      if (HAS_VARIANT_IMG_MODEL && v.images?.length) {
+        await (prisma as any).productVariantImage.createMany({
+          data: v.images.map((url, idx) => ({
+            variantId: variant.id,
+            url,
+            sortOrder: (idx + 1) * 10,
+          })),
+        });
+      }
     }
   }
 
@@ -314,8 +339,14 @@ products.post("/", requireAdmin, async (req, res) => {
     },
     promotions: true,
   };
-  if (FEATURE_VAR)
-    include.variants = { orderBy: { sortOrder: "asc" as const } };
+  if (FEATURE_VAR) {
+    include.variants = {
+      orderBy: { sortOrder: "asc" as const },
+      include: HAS_VARIANT_IMG_MODEL
+        ? { images: { orderBy: { sortOrder: "asc" as const } } }
+        : undefined,
+    };
+  }
 
   const full = await prisma.product.findUnique({
     where: { id: created.id },
@@ -385,20 +416,33 @@ products.put("/:id", requireAdmin, async (req, res) => {
 
   // Variants — regravação idempotente (permite excluir)
   if (FEATURE_VAR && Object.prototype.hasOwnProperty.call(body, "variants")) {
-    const pv = (prisma as any).productVariant;
-    if (pv) {
-      await pv.deleteMany({ where: { productId: id } });
-      const arr = Array.isArray(body.variants) ? body.variants : [];
-      if (arr.length) {
-        await pv.createMany({
-          data: arr.map((v: any, i: number) => ({
-            productId: id,
-            name: v.name,
-            price: Number(v.price) || 0,
-            stock: Number.isFinite(v.stock as any) ? (v.stock as number) : 0,
-            sortOrder: v.sortOrder ?? (i + 1) * 10,
-            active: v.active ?? true,
-            sku: v.sku ?? null,
+    // Deleta tudo (cascata removerá imagens da variante)
+    await (prisma as any).productVariant.deleteMany({
+      where: { productId: id },
+    });
+
+    const arr = Array.isArray(body.variants) ? body.variants : [];
+    for (let i = 0; i < arr.length; i++) {
+      const v = arr[i];
+      const created = await (prisma as any).productVariant.create({
+        data: {
+          productId: id,
+          name: v.name,
+          price: v.price ?? 0,
+          stock: v.stock ?? 0,
+          sortOrder: v.sortOrder ?? (i + 1) * 10,
+          active: v.active ?? true,
+          sku: v.sku ?? null,
+          imageUrl: v.imageUrl ?? null,
+        },
+        select: { id: true },
+      });
+      if (HAS_VARIANT_IMG_MODEL && v.images?.length) {
+        await (prisma as any).productVariantImage.createMany({
+          data: v.images.map((url, idx) => ({
+            variantId: created.id,
+            url,
+            sortOrder: (idx + 1) * 10,
           })),
         });
       }
@@ -413,8 +457,14 @@ products.put("/:id", requireAdmin, async (req, res) => {
     },
     promotions: true,
   };
-  if (FEATURE_VAR)
-    include.variants = { orderBy: { sortOrder: "asc" as const } };
+  if (FEATURE_VAR) {
+    include.variants = {
+      orderBy: { sortOrder: "asc" as const },
+      include: HAS_VARIANT_IMG_MODEL
+        ? { images: { orderBy: { sortOrder: "asc" as const } } }
+        : undefined,
+    };
+  }
 
   const full = await prisma.product.findUnique({ where: { id }, include });
   res.json(serializeProduct({ ...full!, sale: computeSale(full) }, true));
@@ -500,8 +550,11 @@ products.patch("/:id/sort-order", requireAdmin, async (req, res) => {
 });
 
 /** Arquivar / Desarquivar (ADMIN) */
-products.patch("/:id/archive", requireAdmin, async (req, res) => {
+products.patch("/:id/archive", requireAdmin, async (_req, res) => {
   try {
+    // req.params.id dentro do handler de rota
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const req: any = _req;
     await prisma.product.update({
       where: { id: req.params.id },
       data: { active: false },
@@ -512,8 +565,10 @@ products.patch("/:id/archive", requireAdmin, async (req, res) => {
     return res.status(500).json({ error: "archive_failed" });
   }
 });
-products.patch("/:id/unarchive", requireAdmin, async (req, res) => {
+products.patch("/:id/unarchive", requireAdmin, async (_req, res) => {
   try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const req: any = _req;
     await prisma.product.update({
       where: { id: req.params.id },
       data: { active: true },
@@ -578,8 +633,14 @@ products.get("/:idOrSlug", async (req, res) => {
     },
     promotions: true,
   };
-  if (FEATURE_VAR)
-    include.variants = { orderBy: { sortOrder: "asc" as const } };
+  if (FEATURE_VAR) {
+    include.variants = {
+      orderBy: { sortOrder: "asc" as const },
+      include: HAS_VARIANT_IMG_MODEL
+        ? { images: { orderBy: { sortOrder: "asc" as const } } }
+        : undefined,
+    };
+  }
 
   const byId = await prisma.product.findUnique({
     where: { id: idOrSlug },

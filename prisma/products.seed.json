@@ -4,9 +4,16 @@
     "description": "High-gloss floor finish for a durable, scuff-resistant shine.",
     "price": 0,
     "stock": 0,
-    "images": ["https://placehold.co/1200x900?text=Acabado%20Asombroso"],
-    "visiblePrice": false,
     "packageSize": "5 Gallon | 1 Gallon",
+    "pdfUrl": "https://example.com/files/acabado-asombroso.pdf",
+    "images": [
+      "https://placehold.co/1200x900?text=Acabado+Asombroso+Cover",
+      "https://placehold.co/1200x900?text=Acabado+Asombroso+Alt"
+    ],
+    "visiblePrice": false,
+    "visiblePdf": true,
+    "visibleImages": true,
+    "visibleDescription": true,
     "categorySlug": "floor-finishes",
     "variants": [
       {
@@ -15,7 +22,12 @@
         "stock": 0,
         "sortOrder": 10,
         "active": true,
-        "sku": "100698-500000"
+        "sku": "100698-500000",
+        "imageUrl": "https://placehold.co/1200x900?text=Acabado+5G+Cover",
+        "images": [
+          "https://placehold.co/1200x900?text=Acabado+5G+1",
+          "https://placehold.co/1200x900?text=Acabado+5G+2"
+        ]
       },
       {
         "name": "1 Gallon",
@@ -23,7 +35,12 @@
         "stock": 0,
         "sortOrder": 20,
         "active": true,
-        "sku": "100698-500000"
+        "sku": "100698-500000",
+        "imageUrl": "https://placehold.co/1200x900?text=Acabado+1G+Cover",
+        "images": [
+          "https://placehold.co/1200x900?text=Acabado+1G+1",
+          "https://placehold.co/1200x900?text=Acabado+1G+2"
+        ]
       }
     ]
   },
@@ -32,9 +49,13 @@
     "description": "Defoamer for carpet extractors and autoscrubbers.",
     "price": 0,
     "stock": 0,
-    "images": ["https://placehold.co/1200x900?text=Antiespumante%20Asombroso"],
-    "visiblePrice": false,
     "packageSize": "1 Gallon",
+    "pdfUrl": "https://example.com/files/antiespumante-asombroso.pdf",
+    "images": ["https://placehold.co/1200x900?text=Antiespumante+Cover"],
+    "visiblePrice": false,
+    "visiblePdf": true,
+    "visibleImages": true,
+    "visibleDescription": true,
     "categorySlug": "multi-purpose",
     "variants": [
       {
@@ -43,7 +64,9 @@
         "stock": 0,
         "sortOrder": 10,
         "active": true,
-        "sku": "100801-500000"
+        "sku": "100801-500000",
+        "imageUrl": "https://placehold.co/1200x900?text=Anti+1G+Cover",
+        "images": ["https://placehold.co/1200x900?text=Anti+1G+1"]
       }
     ]
   },
@@ -52,9 +75,13 @@
     "description": "Streak-free glass & multi-surface cleaner.",
     "price": 0,
     "stock": 0,
-    "images": ["https://placehold.co/1200x900?text=Cristal%20Cristalino"],
-    "visiblePrice": false,
     "packageSize": "One Quart",
+    "pdfUrl": "https://example.com/files/cristal-cristalino.pdf",
+    "images": ["https://placehold.co/1200x900?text=Cristal+Cover"],
+    "visiblePrice": false,
+    "visiblePdf": true,
+    "visibleImages": true,
+    "visibleDescription": true,
     "categorySlug": "glass-multi-surface-cleaners",
     "variants": [
       {
@@ -63,7 +90,9 @@
         "stock": 0,
         "sortOrder": 10,
         "active": true,
-        "sku": "101233-500000"
+        "sku": "101233-500000",
+        "imageUrl": "https://placehold.co/1200x900?text=Cristal+Quart+Cover",
+        "images": ["https://placehold.co/1200x900?text=Cristal+Quart+1"]
       }
     ]
   },
@@ -72,9 +101,13 @@
     "description": "Super heavy-duty degreaser for tough soils.",
     "price": 0,
     "stock": 0,
-    "images": ["https://placehold.co/1200x900?text=Desengrasante%20Destructor"],
-    "visiblePrice": false,
     "packageSize": "1 Gallon",
+    "pdfUrl": "https://example.com/files/desengrasante-destructor.pdf",
+    "images": ["https://placehold.co/1200x900?text=Destructor+Cover"],
+    "visiblePrice": false,
+    "visiblePdf": true,
+    "visibleImages": true,
+    "visibleDescription": true,
     "categorySlug": "super-heavy-duty-concentrate",
     "variants": [
       {
@@ -83,7 +116,9 @@
         "stock": 0,
         "sortOrder": 10,
         "active": true,
-        "sku": "101295-50000"
+        "sku": "101295-50000",
+        "imageUrl": "https://placehold.co/1200x900?text=Destructor+1G+Cover",
+        "images": ["https://placehold.co/1200x900?text=Destructor+1G+1"]
       }
     ]
   },
@@ -92,9 +127,13 @@
     "description": "Porcelain & tile cleaner for restrooms.",
     "price": 0,
     "stock": 0,
-    "images": ["https://placehold.co/1200x900?text=Grout%20Guerrero"],
-    "visiblePrice": false,
     "packageSize": "1 Gallon | One Quart",
+    "pdfUrl": "https://example.com/files/grout-guerrero.pdf",
+    "images": ["https://placehold.co/1200x900?text=Guerrero+Cover"],
+    "visiblePrice": false,
+    "visiblePdf": true,
+    "visibleImages": true,
+    "visibleDescription": true,
     "categorySlug": "porcelain-tile-cleaners",
     "variants": [
       {
@@ -103,7 +142,9 @@
         "stock": 0,
         "sortOrder": 10,
         "active": true,
-        "sku": "100926-50000"
+        "sku": "100926-50000",
+        "imageUrl": "https://placehold.co/1200x900?text=Guerrero+1G+Cover",
+        "images": ["https://placehold.co/1200x900?text=Guerrero+1G+1"]
       },
       {
         "name": "One Quart",
@@ -111,7 +152,9 @@
         "stock": 0,
         "sortOrder": 20,
         "active": true,
-        "sku": "100926-50000"
+        "sku": "100926-50000",
+        "imageUrl": "https://placehold.co/1200x900?text=Guerrero+Qt+Cover",
+        "images": ["https://placehold.co/1200x900?text=Guerrero+Qt+1"]
       }
     ]
   },
@@ -120,9 +163,13 @@
     "description": "Neutral floor cleaner for daily maintenance.",
     "price": 0,
     "stock": 0,
-    "images": ["https://placehold.co/1200x900?text=Pisos%20Perfectos"],
-    "visiblePrice": false,
     "packageSize": "1 Gallon",
+    "pdfUrl": "https://example.com/files/pisos-perfectos.pdf",
+    "images": ["https://placehold.co/1200x900?text=Pisos+Cover"],
+    "visiblePrice": false,
+    "visiblePdf": true,
+    "visibleImages": true,
+    "visibleDescription": true,
     "categorySlug": "neutral-cleaners",
     "variants": [
       {
@@ -131,7 +178,9 @@
         "stock": 0,
         "sortOrder": 10,
         "active": true,
-        "sku": "101217-500000"
+        "sku": "101217-500000",
+        "imageUrl": "https://placehold.co/1200x900?text=Pisos+1G+Cover",
+        "images": ["https://placehold.co/1200x900?text=Pisos+1G+1"]
       }
     ]
   },
@@ -140,9 +189,13 @@
     "description": "Fast-acting floor finish stripper.",
     "price": 0,
     "stock": 0,
-    "images": ["https://placehold.co/1200x900?text=Removedor%20Robusto"],
-    "visiblePrice": false,
     "packageSize": "5 Gallon | 1 Gallon",
+    "pdfUrl": "https://example.com/files/removedor-robusto.pdf",
+    "images": ["https://placehold.co/1200x900?text=Robusto+Cover"],
+    "visiblePrice": false,
+    "visiblePdf": true,
+    "visibleImages": true,
+    "visibleDescription": true,
     "categorySlug": "floor-strippers",
     "variants": [
       {
@@ -151,7 +204,9 @@
         "stock": 0,
         "sortOrder": 10,
         "active": true,
-        "sku": "100698-500000"
+        "sku": "100698-500000",
+        "imageUrl": "https://placehold.co/1200x900?text=Robusto+5G+Cover",
+        "images": ["https://placehold.co/1200x900?text=Robusto+5G+1"]
       },
       {
         "name": "1 Gallon",
@@ -159,7 +214,9 @@
         "stock": 0,
         "sortOrder": 20,
         "active": true,
-        "sku": "100698-500000"
+        "sku": "100698-500000",
+        "imageUrl": "https://placehold.co/1200x900?text=Robusto+1G+Cover",
+        "images": ["https://placehold.co/1200x900?text=Robusto+1G+1"]
       }
     ]
   },
@@ -168,9 +225,13 @@
     "description": "Non-acid bowl & restroom cleaner.",
     "price": 0,
     "stock": 0,
-    "images": ["https://placehold.co/1200x900?text=Toilet%20Total"],
-    "visiblePrice": false,
     "packageSize": "One Quart",
+    "pdfUrl": "https://example.com/files/toilet-total.pdf",
+    "images": ["https://placehold.co/1200x900?text=Toilet+Total+Cover"],
+    "visiblePrice": false,
+    "visiblePdf": true,
+    "visibleImages": true,
+    "visibleDescription": true,
     "categorySlug": "non-acid-bathroom-bowl-cleaners",
     "variants": [
       {
@@ -179,7 +240,9 @@
         "stock": 0,
         "sortOrder": 10,
         "active": true,
-        "sku": "100975-500000"
+        "sku": "100975-500000",
+        "imageUrl": "https://placehold.co/1200x900?text=Toilet+Quart+Cover",
+        "images": ["https://placehold.co/1200x900?text=Toilet+Quart+1"]
       }
     ]
   }
