@@ -1,0 +1,186 @@
+[
+  {
+    "name": "Acabado Asombroso",
+    "description": "High-gloss floor finish for a durable, scuff-resistant shine.",
+    "price": 0,
+    "stock": 0,
+    "images": ["https://placehold.co/1200x900?text=Acabado%20Asombroso"],
+    "visiblePrice": false,
+    "packageSize": "5 Gallon | 1 Gallon",
+    "categorySlug": "floor-finishes",
+    "variants": [
+      {
+        "name": "5 Gallon",
+        "price": 0,
+        "stock": 0,
+        "sortOrder": 10,
+        "active": true,
+        "sku": "100698-500000"
+      },
+      {
+        "name": "1 Gallon",
+        "price": 0,
+        "stock": 0,
+        "sortOrder": 20,
+        "active": true,
+        "sku": "100698-500000"
+      }
+    ]
+  },
+  {
+    "name": "Antiespumante Asombroso",
+    "description": "Defoamer for carpet extractors and autoscrubbers.",
+    "price": 0,
+    "stock": 0,
+    "images": ["https://placehold.co/1200x900?text=Antiespumante%20Asombroso"],
+    "visiblePrice": false,
+    "packageSize": "1 Gallon",
+    "categorySlug": "multi-purpose",
+    "variants": [
+      {
+        "name": "1 Gallon",
+        "price": 0,
+        "stock": 0,
+        "sortOrder": 10,
+        "active": true,
+        "sku": "100801-500000"
+      }
+    ]
+  },
+  {
+    "name": "Cristal Cristalino",
+    "description": "Streak-free glass & multi-surface cleaner.",
+    "price": 0,
+    "stock": 0,
+    "images": ["https://placehold.co/1200x900?text=Cristal%20Cristalino"],
+    "visiblePrice": false,
+    "packageSize": "One Quart",
+    "categorySlug": "glass-multi-surface-cleaners",
+    "variants": [
+      {
+        "name": "One Quart",
+        "price": 0,
+        "stock": 0,
+        "sortOrder": 10,
+        "active": true,
+        "sku": "101233-500000"
+      }
+    ]
+  },
+  {
+    "name": "Desengrasante Destructor",
+    "description": "Super heavy-duty degreaser for tough soils.",
+    "price": 0,
+    "stock": 0,
+    "images": ["https://placehold.co/1200x900?text=Desengrasante%20Destructor"],
+    "visiblePrice": false,
+    "packageSize": "1 Gallon",
+    "categorySlug": "super-heavy-duty-concentrate",
+    "variants": [
+      {
+        "name": "1 Gallon",
+        "price": 0,
+        "stock": 0,
+        "sortOrder": 10,
+        "active": true,
+        "sku": "101295-50000"
+      }
+    ]
+  },
+  {
+    "name": "Grout Guerrero",
+    "description": "Porcelain & tile cleaner for restrooms.",
+    "price": 0,
+    "stock": 0,
+    "images": ["https://placehold.co/1200x900?text=Grout%20Guerrero"],
+    "visiblePrice": false,
+    "packageSize": "1 Gallon | One Quart",
+    "categorySlug": "porcelain-tile-cleaners",
+    "variants": [
+      {
+        "name": "1 Gallon",
+        "price": 0,
+        "stock": 0,
+        "sortOrder": 10,
+        "active": true,
+        "sku": "100926-50000"
+      },
+      {
+        "name": "One Quart",
+        "price": 0,
+        "stock": 0,
+        "sortOrder": 20,
+        "active": true,
+        "sku": "100926-50000"
+      }
+    ]
+  },
+  {
+    "name": "Pisos Perfectos",
+    "description": "Neutral floor cleaner for daily maintenance.",
+    "price": 0,
+    "stock": 0,
+    "images": ["https://placehold.co/1200x900?text=Pisos%20Perfectos"],
+    "visiblePrice": false,
+    "packageSize": "1 Gallon",
+    "categorySlug": "neutral-cleaners",
+    "variants": [
+      {
+        "name": "1 Gallon",
+        "price": 0,
+        "stock": 0,
+        "sortOrder": 10,
+        "active": true,
+        "sku": "101217-500000"
+      }
+    ]
+  },
+  {
+    "name": "Removedor Robusto",
+    "description": "Fast-acting floor finish stripper.",
+    "price": 0,
+    "stock": 0,
+    "images": ["https://placehold.co/1200x900?text=Removedor%20Robusto"],
+    "visiblePrice": false,
+    "packageSize": "5 Gallon | 1 Gallon",
+    "categorySlug": "floor-strippers",
+    "variants": [
+      {
+        "name": "5 Gallon",
+        "price": 0,
+        "stock": 0,
+        "sortOrder": 10,
+        "active": true,
+        "sku": "100698-500000"
+      },
+      {
+        "name": "1 Gallon",
+        "price": 0,
+        "stock": 0,
+        "sortOrder": 20,
+        "active": true,
+        "sku": "100698-500000"
+      }
+    ]
+  },
+  {
+    "name": "Toilet Total",
+    "description": "Non-acid bowl & restroom cleaner.",
+    "price": 0,
+    "stock": 0,
+    "images": ["https://placehold.co/1200x900?text=Toilet%20Total"],
+    "visiblePrice": false,
+    "packageSize": "One Quart",
+    "categorySlug": "non-acid-bathroom-bowl-cleaners",
+    "variants": [
+      {
+        "name": "One Quart",
+        "price": 0,
+        "stock": 0,
+        "sortOrder": 10,
+        "active": true,
+        "sku": "100975-500000"
+      }
+    ]
+  }
+]

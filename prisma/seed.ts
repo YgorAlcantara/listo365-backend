@@ -2,8 +2,10 @@
 import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcrypt";
+import fs from "fs";
+import path from "path";
 
-// Preferir DIRECT_URL para seeds/migrations (sem pooler)
+// Use DIRECT_URL para seed/migrations (sem pooler)
 const db = new PrismaClient({
   log: ["error"],
   datasources: {
@@ -13,7 +15,8 @@ const db = new PrismaClient({
   },
 });
 
-const FEATURE_VARIANTS = process.env.FEATURE_VARIANTS === "1";
+const FEATURE_VARIANTS =
+  String(process.env.FEATURE_VARIANTS || "").trim() === "1";
 
 // -------------------- helpers --------------------
 function slugify(s: string) {
@@ -38,7 +41,6 @@ async function ensureAdmin() {
     });
     console.log(`✅ Admin created: ${email}`);
   } else {
-    // Atualiza para manter senha/role consistentes em dev
     await db.user.update({
       where: { email },
       data: { password: hash, name, role: "ADMIN" },
@@ -47,27 +49,45 @@ async function ensureAdmin() {
   }
 }
 
-type CatSeed = { name: string; children?: string[] };
-const CATEGORY_TREE: CatSeed[] = [
+/**
+ * Árvore de categorias cobrindo os produtos informados
+ *
+ * Floor Care
+ *   - Floor Finishes
+ *   - Floor Strippers
+ *   - Neutral Cleaners
+ * Carpet Care
+ *   - Multi-Purpose
+ * Glass Cleaners & Polishes
+ *   - Glass & Multi-Surface Cleaners
+ * Cleaners & Degreasers
+ *   - Super Heavy Duty Concentrate
+ * Restroom Care
+ *   - Porcelain & Tile Cleaners
+ *   - Non-Acid Bathroom & Bowl Cleaners
+ */
+const CATEGORY_TREE: Array<{ name: string; children?: string[] }> = [
   {
     name: "Floor Care",
+    children: ["Floor Finishes", "Floor Strippers", "Neutral Cleaners"],
+  },
+  { name: "Carpet Care", children: ["Multi-Purpose"] },
+  {
+    name: "Glass Cleaners & Polishes",
+    children: ["Glass & Multi-Surface Cleaners"],
+  },
+  { name: "Cleaners & Degreasers", children: ["Super Heavy Duty Concentrate"] },
+  {
+    name: "Restroom Care",
     children: [
-      "Floor Finishes",
-      "Floor Strippers",
-      "Neutral & Specialty Cleaners",
+      "Porcelain & Tile Cleaners",
+      "Non-Acid Bathroom & Bowl Cleaners",
     ],
   },
-  {
-    name: "Bathroom Cleaners",
-    children: ["Acid Bathroom Cleaners", "Non-Acid Bathroom & Bowl Cleaners"],
-  },
-  { name: "Glass Cleaners", children: ["Ready-To-Use on Glass"] },
-  { name: "Carpet Care", children: ["Pre-Treatment"] },
-  { name: "Cleaners/Degreasers", children: ["Super Heavy Duty Concentrate"] },
 ];
 
 async function upsertCategories() {
-  const idMap = new Map<string, string>(); // slug -> id
+  const idBySlug = new Map<string, string>(); // slug -> id
 
   for (const parent of CATEGORY_TREE) {
     const pslug = slugify(parent.name);
@@ -76,24 +96,24 @@ async function upsertCategories() {
       create: { name: parent.name, slug: pslug },
       update: { name: parent.name },
     });
-    idMap.set(pslug, p.id);
+    idBySlug.set(pslug, p.id);
 
-    for (const sub of parent.children ?? []) {
-      const sslug = slugify(sub);
+    for (const child of parent.children ?? []) {
+      const cslug = slugify(child);
       const c = await db.category.upsert({
-        where: { slug: sslug },
-        create: { name: sub, slug: sslug, parentId: p.id },
-        update: { name: sub, parentId: p.id },
+        where: { slug: cslug },
+        create: { name: child, slug: cslug, parentId: p.id },
+        update: { name: child, parentId: p.id },
       });
-      idMap.set(sslug, c.id);
+      idBySlug.set(cslug, c.id);
     }
   }
 
-  console.log(`✅ Categories ensured (${idMap.size})`);
-  return idMap;
+  console.log(`✅ Categories ensured (${idBySlug.size})`);
+  return idBySlug;
 }
 
-// -------------------- data --------------------
+// -------------------- data types --------------------
 type SeedVariant = {
   name: string;
   price: number;
@@ -105,187 +125,258 @@ type SeedVariant = {
 type SeedProduct = {
   name: string;
   description: string;
-  price: number;
-  stock: number;
+  price: number; // baseline (0 para quote-only)
+  stock: number; // 0 default
+  images: string[]; // capa + demais
   packageSize?: string;
+  visiblePrice?: boolean; // false => esconde preço no público
+  visiblePackageSize?: boolean; // default true
+  visiblePdf?: boolean; // default true
+  visibleImages?: boolean; // default true
+  visibleDescription?: boolean; // default true
+  categorySlug?: string; // slug da subcategoria (ou pai)
   pdfUrl?: string;
-  images: string[];
-  visiblePrice?: boolean;
-  visiblePackageSize?: boolean;
-  visiblePdf?: boolean;
-  visibleImages?: boolean;
-  visibleDescription?: boolean;
-  categorySlug?: string; // opcional: vincular a uma subcategoria
-  variants?: SeedVariant[]; // opcional: quando FEATURE_VARIANTS=1
+  variants?: SeedVariant[]; // se FEATURE_VARIANTS=1
 };
 
-// 8 produtos demo (alguns com preço oculto para "Request a quote")
-const PRODUCTS: SeedProduct[] = [
+// -------------------- fallback products (caso JSON não exista) --------------------
+const FALLBACK_PRODUCTS: SeedProduct[] = [
   {
-    name: "All-Purpose Cleaner",
-    description: "Versatile surface cleaner for daily use.",
-    price: 12.99,
-    stock: 120,
-    packageSize: "1 gal / 32 oz",
-    pdfUrl: "https://example.com/files/all-purpose-cleaner.pdf",
-    images: [
-      "https://images.unsplash.com/photo-1581578017421-cc63ea4b3bbc?q=80&w=1200",
-      "https://images.unsplash.com/photo-1584824486539-53bb4646bdbc?q=80&w=1200",
-    ],
-    visiblePrice: true,
-    visiblePdf: true,
-    categorySlug: "neutral-specialty-cleaners",
-    variants: FEATURE_VARIANTS
-      ? [
-          { name: "32 oz", price: 5.49, stock: 300, sortOrder: 10 },
-          { name: "1 gal", price: 12.99, stock: 120, sortOrder: 20 },
-        ]
-      : undefined,
-  },
-  {
-    name: "Industrial Degreaser",
-    description: "Heavy-duty degreaser for kitchen and machinery.",
-    price: 24.5,
-    stock: 80,
-    packageSize: "1 gal",
-    pdfUrl: "https://example.com/files/industrial-degreaser.pdf",
-    images: [
-      "https://images.unsplash.com/photo-1585386959984-a4155223168f?q=80&w=1200",
-    ],
-    visiblePrice: true,
-    visiblePdf: true,
-    categorySlug: "super-heavy-duty-concentrate",
-  },
-  {
-    name: "Sodium Hypochlorite 12%",
-    description: "High-grade bleach for industrial cleaning and sanitation.",
-    price: 99.9,
-    stock: 120,
-    packageSize: "20 L",
-    pdfUrl: "https://example.com/files/sodium-hypochlorite.pdf",
-    images: [
-      "https://images.unsplash.com/photo-1522335789203-aabd1fc54bc9?q=80&w=1200",
-      "https://images.unsplash.com/photo-1522335789203-b1dc0e48aa58?q=80&w=1200",
-    ],
-    visiblePrice: false, // quote-only
-    visiblePdf: true,
-    categorySlug: "non-acid-bathroom-bowl-cleaners",
-    variants: FEATURE_VARIANTS
-      ? [
-          { name: "20 L", price: 99.9, stock: 120, sortOrder: 10 },
-          { name: "200 L", price: 899.0, stock: 15, sortOrder: 20 },
-        ]
-      : undefined,
-  },
-  {
-    name: "Hydrogen Peroxide 35%",
-    description: "Food-grade H2O2 suitable for various industrial processes.",
-    price: 149.0,
-    stock: 80,
-    packageSize: "5 L",
-    pdfUrl: "https://example.com/files/hydrogen-peroxide.pdf",
-    images: [
-      "https://images.unsplash.com/photo-1608528577891-48b7361f0f2a?q=80&w=1200",
-      "https://images.unsplash.com/photo-1581539250439-c96689b516dd?q=80&w=1200",
-    ],
+    name: "Acabado Asombroso",
+    description:
+      "High-gloss floor finish for a durable, scuff-resistant shine.",
+    price: 0,
+    stock: 0,
+    images: ["https://placehold.co/1200x900?text=Acabado%20Asombroso"],
     visiblePrice: false,
-    visiblePdf: true,
-    categorySlug: "ready-to-use-on-glass",
-  },
-  {
-    name: "Glass Cleaner RTU",
-    description: "Ready-to-use glass cleaner for a streak-free finish.",
-    price: 7.25,
-    stock: 200,
-    packageSize: "32 oz",
-    images: [
-      "https://images.unsplash.com/photo-1498354178607-a79df2916198?q=80&w=1200",
-    ],
-    visiblePrice: true,
-    categorySlug: "ready-to-use-on-glass",
-  },
-  {
-    name: "Floor Finish High-Gloss",
-    description: "Durable, high-gloss finish ideal for high traffic areas.",
-    price: 39.9,
-    stock: 60,
-    packageSize: "1 gal",
-    images: [
-      "https://images.unsplash.com/photo-1519710164239-da123dc03ef4?q=80&w=1200",
-    ],
-    visiblePrice: true,
+    packageSize: "5 Gallon | 1 Gallon",
     categorySlug: "floor-finishes",
+    variants: [
+      {
+        name: "5 Gallon",
+        price: 0,
+        stock: 0,
+        sortOrder: 10,
+        active: true,
+        sku: "100698-500000",
+      },
+      {
+        name: "1 Gallon",
+        price: 0,
+        stock: 0,
+        sortOrder: 20,
+        active: true,
+        sku: "100698-500000",
+      },
+    ],
   },
   {
-    name: "Floor Stripper Concentrate",
-    description: "Powerful stripper for removing old floor finishes.",
-    price: 34.0,
-    stock: 50,
-    packageSize: "1 gal",
-    images: [
-      "https://images.unsplash.com/photo-1577415136625-98323107c6f6?q=80&w=1200",
+    name: "Antiespumante Asombroso",
+    description: "Defoamer for carpet extractors and autoscrubbers.",
+    price: 0,
+    stock: 0,
+    images: ["https://placehold.co/1200x900?text=Antiespumante%20Asombroso"],
+    visiblePrice: false,
+    packageSize: "1 Gallon",
+    categorySlug: "multi-purpose",
+    variants: [
+      {
+        name: "1 Gallon",
+        price: 0,
+        stock: 0,
+        sortOrder: 10,
+        sku: "100801-500000",
+      },
     ],
-    visiblePrice: true,
+  },
+  {
+    name: "Cristal Cristalino",
+    description: "Streak-free glass & multi-surface cleaner.",
+    price: 0,
+    stock: 0,
+    images: ["https://placehold.co/1200x900?text=Cristal%20Cristalino"],
+    visiblePrice: false,
+    packageSize: "One Quart",
+    categorySlug: "glass-multi-surface-cleaners",
+    variants: [
+      {
+        name: "One Quart",
+        price: 0,
+        stock: 0,
+        sortOrder: 10,
+        sku: "101233-500000",
+      },
+    ],
+  },
+  {
+    name: "Desengrasante Destructor",
+    description: "Super heavy-duty degreaser for tough soils.",
+    price: 0,
+    stock: 0,
+    images: ["https://placehold.co/1200x900?text=Desengrasante%20Destructor"],
+    visiblePrice: false,
+    packageSize: "1 Gallon",
+    categorySlug: "super-heavy-duty-concentrate",
+    variants: [
+      {
+        name: "1 Gallon",
+        price: 0,
+        stock: 0,
+        sortOrder: 10,
+        sku: "101295-50000",
+      },
+    ],
+  },
+  {
+    name: "Grout Guerrero",
+    description: "Porcelain & tile cleaner for restrooms.",
+    price: 0,
+    stock: 0,
+    images: ["https://placehold.co/1200x900?text=Grout%20Guerrero"],
+    visiblePrice: false,
+    packageSize: "1 Gallon | One Quart",
+    categorySlug: "porcelain-tile-cleaners",
+    variants: [
+      {
+        name: "1 Gallon",
+        price: 0,
+        stock: 0,
+        sortOrder: 10,
+        sku: "100926-50000",
+      },
+      {
+        name: "One Quart",
+        price: 0,
+        stock: 0,
+        sortOrder: 20,
+        sku: "100926-50000",
+      },
+    ],
+  },
+  {
+    name: "Pisos Perfectos",
+    description: "Neutral floor cleaner for daily maintenance.",
+    price: 0,
+    stock: 0,
+    images: ["https://placehold.co/1200x900?text=Pisos%20Perfectos"],
+    visiblePrice: false,
+    packageSize: "1 Gallon",
+    categorySlug: "neutral-cleaners",
+    variants: [
+      {
+        name: "1 Gallon",
+        price: 0,
+        stock: 0,
+        sortOrder: 10,
+        sku: "101217-500000",
+      },
+    ],
+  },
+  {
+    name: "Removedor Robusto",
+    description: "Fast-acting floor finish stripper.",
+    price: 0,
+    stock: 0,
+    images: ["https://placehold.co/1200x900?text=Removedor%20Robusto"],
+    visiblePrice: false,
+    packageSize: "5 Gallon | 1 Gallon",
     categorySlug: "floor-strippers",
+    variants: [
+      {
+        name: "5 Gallon",
+        price: 0,
+        stock: 0,
+        sortOrder: 10,
+        sku: "100698-500000",
+      },
+      {
+        name: "1 Gallon",
+        price: 0,
+        stock: 0,
+        sortOrder: 20,
+        sku: "100698-500000",
+      },
+    ],
   },
   {
-    name: "Carpet Pre-Treatment",
-    description: "Pre-treatment for heavy soil and traffic lanes.",
-    price: 18.75,
-    stock: 150,
-    packageSize: "32 oz",
-    images: [
-      "https://images.unsplash.com/photo-1602201622453-0d214a0a9cf8?q=80&w=1200",
+    name: "Toilet Total",
+    description: "Non-acid bowl & restroom cleaner.",
+    price: 0,
+    stock: 0,
+    images: ["https://placehold.co/1200x900?text=Toilet%20Total"],
+    visiblePrice: false,
+    packageSize: "One Quart",
+    categorySlug: "non-acid-bathroom-bowl-cleaners",
+    variants: [
+      {
+        name: "One Quart",
+        price: 0,
+        stock: 0,
+        sortOrder: 10,
+        sku: "100975-500000",
+      },
     ],
-    visiblePrice: true,
-    categorySlug: "pre-treatment",
   },
 ];
 
-// -------------------- upserts --------------------
+// -------------------- load from JSON (optional) --------------------
+function loadProductsJson(): SeedProduct[] {
+  try {
+    const file = path.resolve(process.cwd(), "prisma", "products.seed.json");
+    const raw = fs.readFileSync(file, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed))
+      throw new Error("Invalid products JSON structure");
+    return parsed as SeedProduct[];
+  } catch (e: any) {
+    console.warn(
+      "⚠ products.seed.json not found or invalid. Using fallback list.",
+      e?.message || e
+    );
+    return FALLBACK_PRODUCTS;
+  }
+}
+
+// -------------------- upsert product (TUDO dentro desta função) --------------------
 async function upsertProduct(
   p: SeedProduct,
   i: number,
   categoryIdBySlug?: Map<string, string>
 ) {
   const slug = slugify(p.name);
-  const cover = p.images[0] ?? "";
+  const cover = p.images?.[0] ?? "";
   const sortOrder = (i + 1) * 10;
 
-  const found = await db.product.findUnique({ where: { slug } });
-
-  // Dados base
-  const baseData: any = {
+  // campos base
+  const base: any = {
     name: p.name,
     description: p.description,
-    price: p.price,
-    stock: p.stock,
+    price: p.price ?? 0, // baseline 0 (quote-only)
+    stock: p.stock ?? 0,
     packageSize: p.packageSize,
     pdfUrl: p.pdfUrl,
     imageUrl: cover,
     sortOrder,
     active: true,
   };
-
-  // Flags (se fornecidas)
-  if ("visiblePrice" in p) baseData.visiblePrice = !!p.visiblePrice;
+  if ("visiblePrice" in p) base.visiblePrice = !!p.visiblePrice;
   if ("visiblePackageSize" in p)
-    baseData.visiblePackageSize = !!p.visiblePackageSize;
-  if ("visiblePdf" in p) baseData.visiblePdf = !!p.visiblePdf;
-  if ("visibleImages" in p) baseData.visibleImages = !!p.visibleImages;
+    base.visiblePackageSize = p.visiblePackageSize ?? true;
+  if ("visiblePdf" in p) base.visiblePdf = p.visiblePdf ?? true;
+  if ("visibleImages" in p) base.visibleImages = p.visibleImages ?? true;
   if ("visibleDescription" in p)
-    baseData.visibleDescription = !!p.visibleDescription;
+    base.visibleDescription = p.visibleDescription ?? true;
 
+  const found = await db.product.findUnique({ where: { slug } });
   let productId: string;
 
   if (found) {
-    await db.product.update({ where: { slug }, data: baseData });
+    await db.product.update({ where: { slug }, data: base });
     productId = found.id;
     console.log(`↻ Product updated: ${p.name}`);
 
-    // Recria imagens
     await db.productImage.deleteMany({ where: { productId } });
-    if (p.images.length) {
+    if (p.images?.length) {
       await db.productImage.createMany({
         data: p.images.map((url, idx) => ({
           productId,
@@ -296,13 +387,13 @@ async function upsertProduct(
     }
   } else {
     const created = await db.product.create({
-      data: { slug, ...baseData },
+      data: { slug, ...base },
       select: { id: true },
     });
     productId = created.id;
     console.log(`✅ Product created: ${p.name}`);
 
-    if (p.images.length) {
+    if (p.images?.length) {
       await db.productImage.createMany({
         data: p.images.map((url, idx) => ({
           productId,
@@ -313,10 +404,10 @@ async function upsertProduct(
     }
   }
 
-  // Categoria (primeira categoria)
+  // ----- single category link -----
   if (categoryIdBySlug) {
     await db.productCategory.deleteMany({ where: { productId } });
-    const catSlug = p.categorySlug ? slugify(p.categorySlug) : null;
+    const catSlug = p.categorySlug ? slugify(p.categorySlug) : "";
     const catId = catSlug ? categoryIdBySlug.get(catSlug) : undefined;
     if (catId) {
       await db.productCategory.create({
@@ -325,23 +416,32 @@ async function upsertProduct(
     }
   }
 
-  // Variants
+  // ----- Variants (somente se feature ativa E modelo existe no Client) -----
   if (FEATURE_VARIANTS) {
-    // Apaga e recria idempotente (dados demo)
-    await db.productVariant.deleteMany({ where: { productId } });
-    const vs = Array.isArray(p.variants) ? p.variants : [];
-    if (vs.length) {
-      await db.productVariant.createMany({
-        data: vs.map((v, idx) => ({
-          productId,
-          name: v.name,
-          price: v.price,
-          stock: v.stock ?? 0,
-          sortOrder: v.sortOrder ?? (idx + 1) * 10,
-          active: v.active ?? true,
-          sku: v.sku ?? null,
-        })),
-      });
+    const hasVariantModel =
+      !!(db as any)?._dmmf?.modelMap?.ProductVariant ||
+      !!(db as any).productVariant;
+
+    if (!hasVariantModel) {
+      console.warn(
+        "⚠ FEATURE_VARIANTS=1, mas @prisma/client atual não tem o model ProductVariant. Rode `npx prisma generate` (com schema contendo o model) e reinicie."
+      );
+    } else {
+      await (db as any).productVariant.deleteMany({ where: { productId } });
+      const vs = Array.isArray(p.variants) ? p.variants : [];
+      if (vs.length) {
+        await (db as any).productVariant.createMany({
+          data: vs.map((v: SeedVariant, idx: number) => ({
+            productId,
+            name: v.name,
+            price: v.price ?? 0,
+            stock: v.stock ?? 0,
+            sortOrder: v.sortOrder ?? (idx + 1) * 10,
+            active: v.active ?? true,
+            sku: v.sku ?? null,
+          })),
+        });
+      }
     }
   }
 }
@@ -350,17 +450,16 @@ async function upsertProduct(
 export async function runSeed() {
   await ensureAdmin();
   const categoryIdBySlug = await upsertCategories();
+  const products = loadProductsJson();
 
-  for (let i = 0; i < PRODUCTS.length; i++) {
-    await upsertProduct(PRODUCTS[i], i, categoryIdBySlug);
+  for (let i = 0; i < products.length; i++) {
+    await upsertProduct(products[i], i, categoryIdBySlug);
   }
-
   console.log("✔ Seed finished");
 }
 
 export default runSeed;
 
-// Permite: `ts-node prisma/seed.ts` ou node dist/prisma/seed.js
 if (require.main === module) {
   runSeed()
     .then(() => db.$disconnect())

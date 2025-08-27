@@ -7,19 +7,19 @@ import { requireAdmin } from "../middleware/auth";
 
 export const products = Router();
 
-/** Ping para debug */
+/** Debug ping */
 products.get("/_ping", (_req, res) =>
   res.json({ ok: true, scope: "products-router" })
 );
 
-/**
- * Feature flags:
- * - Por padrão HABILITADAS se a env não está "0" (mais resiliente em dev/local).
- * - Em produção/Supabase você pode desligar explicitamente com "0" se necessário.
- */
-const HAS_VARIANT_MODEL = Boolean((prisma as any).productVariant);
-const FEATURE_VIS = process.env.FEATURE_VISIBILITY_FLAGS !== "0";
-const FEATURE_VAR = process.env.FEATURE_VARIANTS !== "0" && HAS_VARIANT_MODEL;
+// Feature flags (robustas): só habilita variantes se o Client tiver o model
+const HAS_VARIANT_MODEL =
+  !!(prisma as any)?._dmmf?.modelMap?.ProductVariant ||
+  !!(prisma as any).productVariant;
+const FEATURE_VIS =
+  (process.env.FEATURE_VISIBILITY_FLAGS || "1").trim() === "1";
+const FEATURE_VAR =
+  (process.env.FEATURE_VARIANTS || "0").trim() === "1" && HAS_VARIANT_MODEL;
 
 /** helper: aceita http(s) OU caminho absoluto iniciando por "/" */
 const urlish = z
@@ -99,7 +99,7 @@ function serializeProduct(p: any, isAdmin: boolean) {
       ? (p.variants as any[]).map((v) => ({
           id: v.id,
           name: v.name,
-          price: show(visPrice) ? Number(v.price) : undefined, // oculta se necessário
+          price: show(visPrice) ? Number(v.price) : undefined, // hide price if not visible
           stock: v.stock,
           active: v.active,
           sortOrder: v.sortOrder ?? 0,
@@ -215,17 +215,18 @@ const VisibilityShape = z
 const VariantShape = z.object({
   id: z.string().optional(),
   name: z.string().min(1),
-  price: z.coerce.number().nonnegative(),
-  stock: z.coerce.number().int().min(0),
-  sortOrder: z.coerce.number().int().optional().default(0),
-  active: z.boolean().optional().default(true),
+  // tolerante a "", null, undefined
+  price: z.coerce.number().nonnegative().catch(0),
+  stock: z.coerce.number().int().min(0).catch(0),
+  sortOrder: z.coerce.number().int().catch(0),
+  active: z.coerce.boolean().catch(true),
   sku: z.string().optional(),
 });
 
 const Upsert = z.object({
   name: z.string().min(2),
   description: z.string().min(2),
-  price: z.coerce.number().nonnegative(),
+  price: z.coerce.number().nonnegative(), // aceita 0
   stock: z.coerce.number().int().min(0),
   active: z.boolean().optional().default(true),
   packageSize: z.string().min(1).max(100).optional(),
@@ -287,6 +288,7 @@ products.post("/", requireAdmin, async (req, res) => {
     });
   }
 
+  // Variants
   if (FEATURE_VAR && body.variants && body.variants.length) {
     const pv = (prisma as any).productVariant;
     if (pv) {
@@ -294,8 +296,8 @@ products.post("/", requireAdmin, async (req, res) => {
         data: body.variants.map((v, i) => ({
           productId: created.id,
           name: v.name,
-          price: v.price,
-          stock: v.stock,
+          price: Number(v.price) || 0,
+          stock: Number.isFinite(v.stock as any) ? (v.stock as number) : 0,
           sortOrder: v.sortOrder ?? (i + 1) * 10,
           active: v.active ?? true,
           sku: v.sku ?? null,
@@ -392,8 +394,8 @@ products.put("/:id", requireAdmin, async (req, res) => {
           data: arr.map((v: any, i: number) => ({
             productId: id,
             name: v.name,
-            price: v.price,
-            stock: v.stock,
+            price: Number(v.price) || 0,
+            stock: Number.isFinite(v.stock as any) ? (v.stock as number) : 0,
             sortOrder: v.sortOrder ?? (i + 1) * 10,
             active: v.active ?? true,
             sku: v.sku ?? null,
@@ -418,7 +420,7 @@ products.put("/:id", requireAdmin, async (req, res) => {
   res.json(serializeProduct({ ...full!, sale: computeSale(full) }, true));
 });
 
-/** Deletar (ADMIN) — arquivo se houver pedidos */
+/** Deletar (ADMIN) — arquiva se houver pedidos */
 products.delete("/:id", requireAdmin, async (req, res) => {
   const id = req.params.id;
   try {
@@ -460,12 +462,10 @@ products.delete("/:id/hard", requireAdmin, async (req, res) => {
   try {
     const usage = await prisma.orderItem.count({ where: { productId: id } });
     if (usage > 0) {
-      return res
-        .status(409)
-        .json({
-          error: "in_use",
-          message: "This product has related orders. Archive it instead.",
-        });
+      return res.status(409).json({
+        error: "in_use",
+        message: "This product has related orders. Archive it instead.",
+      });
     }
     await prisma.$transaction(
       [
