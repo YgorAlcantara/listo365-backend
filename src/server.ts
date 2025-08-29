@@ -3,6 +3,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
+import compression from "compression";
 import { prisma } from "./lib/prisma";
 
 import { auth } from "./routes/auth";
@@ -16,6 +17,7 @@ const app = express();
 
 // Behind proxy/CDN (Render/Fly/Cloudflare/etc.)
 app.set("trust proxy", 1);
+app.use(compression({ threshold: 512 }));
 
 // CORS (allow multiple origins via FRONTEND_ORIGIN separated by commas)
 const envOrigins = process.env.FRONTEND_ORIGIN?.split(",")
