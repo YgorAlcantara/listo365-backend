@@ -4,7 +4,7 @@ import { prisma } from "../lib/prisma";
 import { requireAdmin } from "../middleware/auth";
 import { z } from "zod";
 import type { Prisma } from "@prisma/client";
-import { sendNewOrderEmails } from "../lib/mailer"; // alias válido
+import { sendNewOrderEmails } from "../lib/mailer";
 
 export const orders = Router();
 
@@ -170,9 +170,9 @@ orders.post("/", async (req: Request, res: Response) => {
         z.object({
           productId: z.string().min(1),
           quantity: z.number().int().positive(),
-          unitPrice: z.number().nonnegative().optional(), // pode faltar quando é "quote"
+          unitPrice: z.number().nonnegative().optional(),
           variantId: z.string().optional().nullable(),
-          variantName: z.string().optional().nullable(), // snapshot opcional
+          variantName: z.string().optional().nullable(),
         })
       )
       .min(1),
@@ -180,7 +180,14 @@ orders.post("/", async (req: Request, res: Response) => {
     recurrence: z.string().optional().nullable(),
   });
 
-  const body = Body.parse(req.body);
+  // ⚠️ não lançar erro do Zod: responder 400
+  const parsed = Body.safeParse(req.body);
+  if (!parsed.success) {
+    return res
+      .status(400)
+      .json({ error: "invalid_body", issues: parsed.error.issues });
+  }
+  const body = parsed.data;
 
   // Hidrata preços ausentes via variant.price quando existir
   const hydratedItems = await Promise.all(
@@ -194,7 +201,7 @@ orders.post("/", async (req: Request, res: Response) => {
       const variant = await (prisma as any).productVariant?.findUnique({
         where: { id: it.variantId },
       });
-      const fallbackPrice = asNum(variant?.price ?? 0);
+      const fallbackPrice = Number(variant?.price ?? 0);
       const variantName = it.variantName ?? variant?.name ?? null;
       return {
         ...it,
@@ -282,27 +289,14 @@ orders.post("/", async (req: Request, res: Response) => {
     return order;
   });
 
-  // Envia e-mails (não quebra o fluxo em caso de falha)
-  function htmlEscape(s: string) {
-    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  }
-
-  // Envia e-mails (não quebra o fluxo se falhar)
+  // E-mail (não quebra fluxo se falhar)
   try {
     await sendNewOrderEmails({
       id: created.id,
       createdAt: created.createdAt.toISOString(),
       status: created.status,
-      note: created.note || null,
       subtotal: Number(created.subtotal),
       total: Number(created.total),
-      items: created.items.map((it) => ({
-        productId: it.productId,
-        productName: it.product?.name ?? null,
-        variantName: it.variant?.name ?? null,
-        quantity: it.quantity,
-        unitPrice: Number(it.unitPrice),
-      })),
       customer: {
         name: created.customer?.name || "",
         email: created.customer?.email || "",
@@ -313,18 +307,28 @@ orders.post("/", async (req: Request, res: Response) => {
       address: created.address
         ? {
             line1: created.address.line1,
-            line2: created.address.line2 || null,
-            district: created.address.district || null,
-            city: created.address.city || "",
-            state: created.address.state || null,
-            postalCode: created.address.postalCode || null,
-            country: created.address.country || "US",
+            line2: created.address.line2,
+            district: created.address.district,
+            city: created.address.city,
+            state: created.address.state,
+            postalCode: created.address.postalCode,
+            country: created.address.country,
           }
         : null,
+      note: created.note || null,
+      items: created.items.map((it) => ({
+        productId: it.productId,
+        productName: it.product?.name || null,
+        variantName: it.variant?.name || null,
+        quantity: it.quantity,
+        unitPrice: Number(it.unitPrice),
+      })),
     });
   } catch (e) {
     console.warn("[orders] email send failed:", (e as Error).message);
   }
+
+  res.status(201).json(created);
 });
 
 // =============== CHANGE STATUS (ADMIN) ===============
@@ -344,6 +348,7 @@ orders.patch(
         include: { items: true },
       });
       if (!current) throw new Error("not_found");
+
       const prev = current.status as OrderStatus;
 
       if (prev !== "COMPLETED" && next === "COMPLETED") {
@@ -426,6 +431,7 @@ orders.get(
       "postal_code",
       "country",
       "note",
+      "recurrence",
       "subtotal",
       "total",
       "currency",
@@ -436,6 +442,7 @@ orders.get(
       "item_unit",
       "item_line_total",
     ];
+
     const rows: string[] = [header.join(",")];
 
     for (const o of list) {
@@ -457,6 +464,7 @@ orders.get(
             o.address?.postalCode || "",
             o.address?.country || "",
             o.note || "",
+            o.recurrence || "",
             asNum(o.subtotal).toFixed(2),
             asNum(o.total).toFixed(2),
             o.currency || "USD",
@@ -493,6 +501,7 @@ orders.get(
             o.address?.postalCode || "",
             o.address?.country || "",
             o.note || "",
+            o.recurrence || "",
             asNum(o.subtotal).toFixed(2),
             asNum(o.total).toFixed(2),
             o.currency || "USD",
@@ -512,6 +521,6 @@ orders.get(
     const csv = rows.join("\n");
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", 'attachment; filename="orders.csv"');
-    res.status(200).send("\uFEFF" + csv); // BOM p/ Excel
+    res.status(200).send("\uFEFF" + csv);
   }
 );

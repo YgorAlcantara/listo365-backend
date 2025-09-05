@@ -1,5 +1,6 @@
+// backend/src/server.ts
 import "dotenv/config";
-import express from "express";
+import express, { NextFunction } from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import compression from "compression";
@@ -14,57 +15,29 @@ import { customers } from "./routes/customers";
 
 const app = express();
 
+// Behind proxy/CDN (Render/Fly/Cloudflare/etc.)
 app.set("trust proxy", 1);
 app.use(compression({ threshold: 512 }));
 
-// ---- CORS (lista múltipla + shim defensivo) ----
+// ---- CORS robusto (lista múltipla + preflight + headers básicos) ----
 const allowedOrigins = (process.env.FRONTEND_ORIGIN || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
-// inclui origens de dev por padrão (não atrapalha prod)
-const defaultDevOrigins = new Set([
-  "http://localhost:5173",
-  "http://127.0.0.1:5173",
-]);
+const corsOptions: cors.CorsOptions = {
+  origin(origin, cb) {
+    if (!origin) return cb(null, true); // curl/postman
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+    return cb(new Error(`Origin ${origin} not allowed by CORS`));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+};
 
-const allowSet = new Set<string>([...allowedOrigins, ...defaultDevOrigins]);
-
-// 1) cors() oficial
-app.use(
-  cors({
-    origin(origin, cb) {
-      if (!origin) return cb(null, true); // curl/postman
-      if (allowSet.has(origin)) return cb(null, true);
-      return cb(new Error(`Origin ${origin} not allowed by CORS`));
-    },
-    credentials: true,
-    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-  })
-);
-
-// 2) shim defensivo: garante headers mesmo se algo escapar
-app.use((req, res, next) => {
-  const origin = req.headers.origin as string | undefined;
-  if (origin && allowSet.has(origin)) {
-    res.header("Access-Control-Allow-Origin", origin);
-    res.header("Vary", "Origin");
-    res.header("Access-Control-Allow-Credentials", "true");
-    res.header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
-    res.header(
-      "Access-Control-Allow-Headers",
-      "Content-Type, Authorization, X-Requested-With"
-    );
-  }
-  if (req.method === "OPTIONS") {
-    // log útil p/ depurar preflight
-    if (origin) console.log(`[CORS] Preflight OK for ${origin} -> ${req.path}`);
-    return res.sendStatus(204);
-  }
-  next();
-});
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 
 // Body & cookies
 app.use(express.json({ limit: "1mb" }));
@@ -134,8 +107,23 @@ app.use("/promotions", promotions);
 app.use("/categories", categories);
 app.use("/customers", customers);
 
+// Error handler global — garante resposta JSON + CORS mesmo em erros
+app.use(
+  (
+    err: any,
+    _req: express.Request,
+    res: express.Response,
+    _next: NextFunction
+  ) => {
+    console.error("unhandled error:", err);
+    if (res.headersSent) return;
+    res.status(500).json({ error: "internal_error" });
+  }
+);
+
 // Diagnostics (dev only)
 if (process.env.NODE_ENV !== "production") {
+  // @ts-ignore
   app.get("/_routes", (_req, res) => {
     const list: any[] = [];
     // @ts-ignore
@@ -172,9 +160,6 @@ app.use((req, res) =>
 const port = Number(process.env.PORT || 4000);
 app.listen(port, async () => {
   console.log(`API listening on :${port}`);
-  console.log(
-    `[CORS] Allowed origins: ${[...allowSet].join(", ") || "(all via cors())"}`
-  );
   try {
     await prisma.$connect();
   } catch (e) {
