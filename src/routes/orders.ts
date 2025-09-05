@@ -1,17 +1,30 @@
-// src/routes/orders.ts
+// backend/src/routes/orders.ts
 import { Router, Request, Response } from "express";
 import { prisma } from "../lib/prisma";
 import { requireAdmin } from "../middleware/auth";
 import { z } from "zod";
 import type { Prisma } from "@prisma/client";
-import { sendOrderEmails } from "../lib/mailer";
+import { sendOrderEmails } from "../lib/mailer"; // alias válido
 
 export const orders = Router();
 
-orders.get("/_ping", (_req, res) => res.json({ ok: true, scope: "orders-router" }));
+orders.get("/_ping", (_req, res) =>
+  res.json({ ok: true, scope: "orders-router" })
+);
 
-type OrderStatus = "RECEIVED" | "IN_PROGRESS" | "COMPLETED" | "REFUSED" | "CANCELLED";
-const STATUS_VALUES: OrderStatus[] = ["RECEIVED", "IN_PROGRESS", "COMPLETED", "REFUSED", "CANCELLED"];
+type OrderStatus =
+  | "RECEIVED"
+  | "IN_PROGRESS"
+  | "COMPLETED"
+  | "REFUSED"
+  | "CANCELLED";
+const STATUS_VALUES: OrderStatus[] = [
+  "RECEIVED",
+  "IN_PROGRESS",
+  "COMPLETED",
+  "REFUSED",
+  "CANCELLED",
+];
 
 // ---------- helpers ----------
 function asNum(v: unknown): number {
@@ -21,24 +34,40 @@ function asNum(v: unknown): number {
 
 async function applyStockDelta(
   tx: Prisma.TransactionClient,
-  items: Array<{ productId: string; quantity: number; variantId?: string | null }>,
+  items: Array<{
+    productId: string;
+    quantity: number;
+    variantId?: string | null;
+  }>,
   direction: "dec" | "inc"
 ) {
   for (const it of items) {
     const delta = direction === "dec" ? -it.quantity : it.quantity;
-    await tx.product.update({ where: { id: it.productId }, data: { stock: { increment: delta } } });
+    await tx.product.update({
+      where: { id: it.productId },
+      data: { stock: { increment: delta } },
+    });
     if (it.variantId) {
       const pv = (tx as any).productVariant;
       if (pv) {
-        await pv.update({ where: { id: it.variantId }, data: { stock: { increment: delta } } });
+        await pv.update({
+          where: { id: it.variantId },
+          data: { stock: { increment: delta } },
+        });
       }
     }
   }
 }
 
 function calcTotals(items: Array<{ quantity: number; unitPrice: number }>) {
-  const subtotal = items.reduce((acc, it) => acc + it.quantity * asNum(it.unitPrice), 0);
-  return { subtotal: Number(subtotal.toFixed(2)), total: Number(subtotal.toFixed(2)) };
+  const subtotal = items.reduce(
+    (acc, it) => acc + it.quantity * asNum(it.unitPrice),
+    0
+  );
+  return {
+    subtotal: Number(subtotal.toFixed(2)),
+    total: Number(subtotal.toFixed(2)),
+  };
 }
 
 function csvEscape(s: unknown): string {
@@ -169,7 +198,8 @@ orders.post("/", async (req: Request, res: Response) => {
       const variantName = it.variantName ?? variant?.name ?? null;
       return {
         ...it,
-        unitPrice: typeof it.unitPrice === "number" ? it.unitPrice : fallbackPrice,
+        unitPrice:
+          typeof it.unitPrice === "number" ? it.unitPrice : fallbackPrice,
         variantName,
       };
     })
@@ -256,15 +286,13 @@ orders.post("/", async (req: Request, res: Response) => {
   try {
     await sendOrderEmails({
       id: created.id,
-      createdAt: created.createdAt,
-      status: created.status as any,
-      note: created.note,
-      recurrence: created.recurrence,
+      createdAt: created.createdAt.toISOString(), // ISO
+      status: created.status,
+      note: created.note ?? null,
       subtotal: asNum(created.subtotal),
       total: asNum(created.total),
-      currency: created.currency || "USD",
       customer: {
-        name: created.customer?.name || null,
+        name: created.customer?.name || "",
         email: created.customer?.email || "",
         phone: created.customer?.phone || null,
         company: created.customer?.company || null,
@@ -282,10 +310,11 @@ orders.post("/", async (req: Request, res: Response) => {
           }
         : null,
       items: created.items.map((it) => ({
+        productId: it.productId,
+        productName: it.product?.name ?? null,
+        variantName: it.variant?.name ?? null,
         quantity: it.quantity,
         unitPrice: asNum(it.unitPrice),
-        product: { name: it.product?.name || null },
-        variant: { name: it.variant?.name || null, sku: it.variant?.sku || null },
       })),
     });
   } catch (e) {
@@ -296,36 +325,52 @@ orders.post("/", async (req: Request, res: Response) => {
 });
 
 // =============== CHANGE STATUS (ADMIN) ===============
-orders.patch("/:id/status", requireAdmin, async (req: Request, res: Response) => {
-  const Body = z.object({ status: z.enum(STATUS_VALUES as [OrderStatus, ...OrderStatus[]]) });
-  const { status: next } = Body.parse(req.body);
-  const id = req.params.id;
+orders.patch(
+  "/:id/status",
+  requireAdmin,
+  async (req: Request, res: Response) => {
+    const Body = z.object({
+      status: z.enum(STATUS_VALUES as [OrderStatus, ...OrderStatus[]]),
+    });
+    const { status: next } = Body.parse(req.body);
+    const id = req.params.id;
 
-  const updated = await prisma.$transaction(async (tx) => {
-    const current = await tx.orderInquiry.findUnique({ where: { id }, include: { items: true } });
-    if (!current) throw new Error("not_found");
+    const updated = await prisma.$transaction(async (tx) => {
+      const current = await tx.orderInquiry.findUnique({
+        where: { id },
+        include: { items: true },
+      });
+      if (!current) throw new Error("not_found");
+      const prev = current.status as OrderStatus;
 
-    const prev = current.status as OrderStatus;
+      if (prev !== "COMPLETED" && next === "COMPLETED") {
+        await applyStockDelta(
+          tx,
+          current.items.map((i) => ({
+            productId: i.productId,
+            quantity: i.quantity,
+            variantId: i.variantId ?? null,
+          })),
+          "dec"
+        );
+      } else if (prev === "COMPLETED" && next !== "COMPLETED") {
+        await applyStockDelta(
+          tx,
+          current.items.map((i) => ({
+            productId: i.productId,
+            quantity: i.quantity,
+            variantId: i.variantId ?? null,
+          })),
+          "inc"
+        );
+      }
 
-    if (prev !== "COMPLETED" && next === "COMPLETED") {
-      await applyStockDelta(
-        tx,
-        current.items.map((i) => ({ productId: i.productId, quantity: i.quantity, variantId: i.variantId ?? null })),
-        "dec"
-      );
-    } else if (prev === "COMPLETED" && next !== "COMPLETED") {
-      await applyStockDelta(
-        tx,
-        current.items.map((i) => ({ productId: i.productId, quantity: i.quantity, variantId: i.variantId ?? null })),
-        "inc"
-      );
-    }
+      return tx.orderInquiry.update({ where: { id }, data: { status: next } });
+    });
 
-    return tx.orderInquiry.update({ where: { id }, data: { status: next } });
-  });
-
-  res.json({ ok: true, status: updated.status });
-});
+    res.json({ ok: true, status: updated.status });
+  }
+);
 
 // =============== NOTES (ADMIN) ===============
 orders.patch("/:id/note", requireAdmin, async (req: Request, res: Response) => {
@@ -344,128 +389,126 @@ orders.patch("/:id/note", requireAdmin, async (req: Request, res: Response) => {
 });
 
 // =============== EXPORT CSV (ADMIN) ===============
-orders.get("/export/csv", requireAdmin, async (_req: Request, res: Response) => {
-  const list = await prisma.orderInquiry.findMany({
-    orderBy: { createdAt: "desc" },
-    include: {
-      customer: true,
-      address: true,
-      items: {
-        include: {
-          product: { select: { name: true } },
-          variant: { select: { name: true, sku: true } },
+orders.get(
+  "/export/csv",
+  requireAdmin,
+  async (_req: Request, res: Response) => {
+    const list = await prisma.orderInquiry.findMany({
+      orderBy: { createdAt: "desc" },
+      include: {
+        customer: true,
+        address: true,
+        items: {
+          include: {
+            product: { select: { name: true } },
+            variant: { select: { name: true, sku: true } },
+          },
         },
       },
-    },
-  });
+    });
 
-  // Uma linha por item (melhor p/ BI/planilhas)
-  const header = [
-    "order_id",
-    "created_at",
-    "status",
-    "customer_name",
-    "customer_email",
-    "customer_phone",
-    "company",
-    "addr_line1",
-    "addr_line2",
-    "district",
-    "city",
-    "state",
-    "postal_code",
-    "country",
-    "note",
-    "recurrence",
-    "subtotal",
-    "total",
-    "currency",
-    "item_product",
-    "item_variant",
-    "item_sku",
-    "item_qty",
-    "item_unit",
-    "item_line_total",
-  ];
+    const header = [
+      "order_id",
+      "created_at",
+      "status",
+      "customer_name",
+      "customer_email",
+      "customer_phone",
+      "company",
+      "addr_line1",
+      "addr_line2",
+      "district",
+      "city",
+      "state",
+      "postal_code",
+      "country",
+      "note",
+      "subtotal",
+      "total",
+      "currency",
+      "item_product",
+      "item_variant",
+      "item_sku",
+      "item_qty",
+      "item_unit",
+      "item_line_total",
+    ];
+    const rows: string[] = [header.join(",")];
 
-  const rows: string[] = [header.join(",")];
+    for (const o of list) {
+      if (o.items.length === 0) {
+        rows.push(
+          [
+            o.id,
+            o.createdAt.toISOString(),
+            o.status,
+            o.customer?.name || "",
+            o.customer?.email || "",
+            o.customer?.phone || "",
+            o.customer?.company || "",
+            o.address?.line1 || "",
+            o.address?.line2 || "",
+            o.address?.district || "",
+            o.address?.city || "",
+            o.address?.state || "",
+            o.address?.postalCode || "",
+            o.address?.country || "",
+            o.note || "",
+            asNum(o.subtotal).toFixed(2),
+            asNum(o.total).toFixed(2),
+            o.currency || "USD",
+            "",
+            "",
+            "",
+            "0",
+            "0.00",
+            "0.00",
+          ]
+            .map(csvEscape)
+            .join(",")
+        );
+        continue;
+      }
 
-  for (const o of list) {
-    if (o.items.length === 0) {
-      rows.push(
-        [
-          o.id,
-          o.createdAt.toISOString(),
-          o.status,
-          o.customer?.name || "",
-          o.customer?.email || "",
-          o.customer?.phone || "",
-          o.customer?.company || "",
-          o.address?.line1 || "",
-          o.address?.line2 || "",
-          o.address?.district || "",
-          o.address?.city || "",
-          o.address?.state || "",
-          o.address?.postalCode || "",
-          o.address?.country || "",
-          o.note || "",
-          o.recurrence || "",
-          asNum(o.subtotal).toFixed(2),
-          asNum(o.total).toFixed(2),
-          o.currency || "USD",
-          "", // product
-          "", // variant
-          "", // sku
-          "0",
-          "0.00",
-          "0.00",
-        ]
-          .map(csvEscape)
-          .join(",")
-      );
-      continue;
+      for (const it of o.items) {
+        const unit = asNum(it.unitPrice);
+        const line = unit * it.quantity;
+        rows.push(
+          [
+            o.id,
+            o.createdAt.toISOString(),
+            o.status,
+            o.customer?.name || "",
+            o.customer?.email || "",
+            o.customer?.phone || "",
+            o.customer?.company || "",
+            o.address?.line1 || "",
+            o.address?.line2 || "",
+            o.address?.district || "",
+            o.address?.city || "",
+            o.address?.state || "",
+            o.address?.postalCode || "",
+            o.address?.country || "",
+            o.note || "",
+            asNum(o.subtotal).toFixed(2),
+            asNum(o.total).toFixed(2),
+            o.currency || "USD",
+            it.product?.name || "",
+            it.variant?.name || "",
+            it.variant?.sku || "",
+            String(it.quantity),
+            unit.toFixed(2),
+            line.toFixed(2),
+          ]
+            .map(csvEscape)
+            .join(",")
+        );
+      }
     }
 
-    for (const it of o.items) {
-      const unit = asNum(it.unitPrice);
-      const line = unit * it.quantity;
-      rows.push(
-        [
-          o.id,
-          o.createdAt.toISOString(),
-          o.status,
-          o.customer?.name || "",
-          o.customer?.email || "",
-          o.customer?.phone || "",
-          o.customer?.company || "",
-          o.address?.line1 || "",
-          o.address?.line2 || "",
-          o.address?.district || "",
-          o.address?.city || "",
-          o.address?.state || "",
-          o.address?.postalCode || "",
-          o.address?.country || "",
-          o.note || "",
-          o.recurrence || "",
-          asNum(o.subtotal).toFixed(2),
-          asNum(o.total).toFixed(2),
-          o.currency || "USD",
-          it.product?.name || "",
-          it.variant?.name || "",
-          it.variant?.sku || "",
-          String(it.quantity),
-          unit.toFixed(2),
-          line.toFixed(2),
-        ]
-          .map(csvEscape)
-          .join(",")
-      );
-    }
+    const csv = rows.join("\n");
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", 'attachment; filename="orders.csv"');
+    res.status(200).send("\uFEFF" + csv); // BOM p/ Excel
   }
-
-  const csv = rows.join("\n");
-  res.setHeader("Content-Type", "text/csv; charset=utf-8");
-  res.setHeader("Content-Disposition", 'attachment; filename="orders.csv"');
-  // BOM p/ Excel
-  res.status(200).send("\uFEFF" + csv);
-});
+);

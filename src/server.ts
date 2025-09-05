@@ -1,7 +1,7 @@
 // backend/src/server.ts
 import "dotenv/config";
 import express from "express";
-import cors from "cors";
+import cors, { CorsOptions } from "cors";
 import cookieParser from "cookie-parser";
 import compression from "compression";
 import { prisma } from "./lib/prisma";
@@ -19,26 +19,55 @@ const app = express();
 app.set("trust proxy", 1);
 app.use(compression({ threshold: 512 }));
 
-// ---- CORS robusto (lista múltipla + preflight + headers básicos) ----
+// ---------- CORS ----------
 const allowedOrigins = (process.env.FRONTEND_ORIGIN || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
-const corsOptions: cors.CorsOptions = {
+// Modo liberal: útil em dev/local ou quando precisa testar de várias origens
+const allowAll =
+  process.env.CORS_ANY === "1" ||
+  allowedOrigins.length === 0 ||
+  process.env.NODE_ENV !== "production";
+
+const corsOptions: CorsOptions = {
   origin(origin, cb) {
-    // permite ferramentas (curl/postman) ou navegação direta
+    // Sem Origin (curl/postman) -> ok
     if (!origin) return cb(null, true);
+    if (allowAll) return cb(null, true);
     if (allowedOrigins.includes(origin)) return cb(null, true);
     return cb(new Error(`Origin ${origin} not allowed by CORS`));
   },
   credentials: true,
-  methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+  methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
 };
 
 app.use(cors(corsOptions));
+// Preflight rápido
 app.options("*", cors(corsOptions));
+
+// Fallback CORS (garante cabeçalhos mesmo se algum proxy engolir o middleware)
+app.use((req, res, next) => {
+  if (!res.getHeader("Access-Control-Allow-Origin")) {
+    const origin = (req.headers.origin as string) || "*";
+    // Com credentials, browsers exigem refletir o Origin; evitamos '*' se houver Origin
+    res.setHeader("Access-Control-Allow-Origin", origin || "*");
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader(
+      "Access-Control-Allow-Methods",
+      "GET,POST,PATCH,PUT,DELETE,OPTIONS"
+    );
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "Content-Type,Authorization,X-Requested-With"
+    );
+  }
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
 
 // Body & cookies
 app.use(express.json({ limit: "1mb" }));
@@ -117,14 +146,18 @@ if (process.env.NODE_ENV !== "production") {
       if (m.route) {
         list.push({
           path: m.route.path,
-          methods: Object.keys(m.route.methods).filter((k) => m.route.methods[k]),
+          methods: Object.keys(m.route.methods).filter(
+            (k) => m.route.methods[k]
+          ),
         });
       } else if (m.name === "router" && m.handle?.stack) {
         m.handle.stack.forEach((h: any) => {
           if (h.route)
             list.push({
               path: h.route.path,
-              methods: Object.keys(h.route.methods).filter((k) => h.route.methods[k]),
+              methods: Object.keys(h.route.methods).filter(
+                (k) => h.route.methods[k]
+              ),
             });
         });
       }
@@ -142,6 +175,11 @@ app.use((req, res) =>
 const port = Number(process.env.PORT || 4000);
 app.listen(port, async () => {
   console.log(`API listening on :${port}`);
+  console.log(
+    `[CORS] allowAll=${allowAll} | allowedOrigins=${
+      allowedOrigins.length ? allowedOrigins.join(", ") : "(none)"
+    }`
+  );
   try {
     await prisma.$connect();
   } catch (e) {

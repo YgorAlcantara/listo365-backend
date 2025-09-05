@@ -11,7 +11,7 @@ export type EmailOrderItem = {
 
 export type EmailOrder = {
   id: string;
-  createdAt: string;
+  createdAt: string; // ISO string
   status: string;
   customer: {
     name: string;
@@ -24,7 +24,7 @@ export type EmailOrder = {
     line1: string;
     line2?: string | null;
     district?: string | null;
-    city?: string;
+    city?: string | null;
     state?: string | null;
     postalCode?: string | null;
     country?: string | null;
@@ -43,19 +43,27 @@ function money(n: number) {
   }).format(n);
 }
 
+// compatível com targets antigos (sem String.prototype.replaceAll)
 function htmlEscape(s: string) {
-  return s
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function orderHtml(o: EmailOrder) {
   const address = o.address
     ? `
       <p style="margin:4px 0 0 0;font-size:13px;color:#444;">
-        ${htmlEscape(o.address.line1)}${o.address.line2 ? `<br/>${htmlEscape(o.address.line2)}` : ""}
-        <br/>${htmlEscape([o.address.city || "", o.address.state || "", o.address.postalCode || ""].filter(Boolean).join(", "))}
+        ${htmlEscape(o.address.line1)}${
+        o.address.line2 ? `<br/>${htmlEscape(o.address.line2)}` : ""
+      }
+        <br/>${htmlEscape(
+          [
+            o.address.city || "",
+            o.address.state || "",
+            o.address.postalCode || "",
+          ]
+            .filter(Boolean)
+            .join(", ")
+        )}
         <br/>${htmlEscape(o.address.country || "US")}
       </p>`
     : `<p style="margin:4px 0 0 0;font-size:13px;color:#666;">—</p>`;
@@ -65,11 +73,21 @@ function orderHtml(o: EmailOrder) {
       (it) => `
       <tr>
         <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:13px;">
-          ${htmlEscape(it.productName || it.productId)}${it.variantName ? ` <span style="color:#666;">(${htmlEscape(it.variantName)})</span>` : ""}
+          ${htmlEscape(it.productName || it.productId)}${
+        it.variantName
+          ? ` <span style="color:#666;">(${htmlEscape(it.variantName)})</span>`
+          : ""
+      }
         </td>
-        <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:13px;text-align:center;">${it.quantity}</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:13px;text-align:right;">${money(it.unitPrice)}</td>
-        <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:13px;text-align:right;">${money(it.unitPrice * it.quantity)}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:13px;text-align:center;">${
+          it.quantity
+        }</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:13px;text-align:right;">${money(
+          it.unitPrice
+        )}</td>
+        <td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:13px;text-align:right;">${money(
+          it.unitPrice * it.quantity
+        )}</td>
       </tr>`
     )
     .join("");
@@ -77,7 +95,9 @@ function orderHtml(o: EmailOrder) {
   return `
   <div style="font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:680px;margin:0 auto;">
     <h2 style="margin:0 0 8px 0;color:#111;">New Quote Request — #${o.id}</h2>
-    <div style="font-size:12px;color:#666;margin-bottom:16px;">${new Date(o.createdAt).toLocaleString()}</div>
+    <div style="font-size:12px;color:#666;margin-bottom:16px;">${new Date(
+      o.createdAt
+    ).toLocaleString()}</div>
 
     <table cellpadding="0" cellspacing="0" style="width:100%;border-collapse:collapse;border:1px solid #eee;border-radius:10px;overflow:hidden;">
       <thead>
@@ -92,11 +112,15 @@ function orderHtml(o: EmailOrder) {
       <tfoot>
         <tr>
           <td colspan="3" style="padding:10px;text-align:right;font-size:13px;color:#222;">Subtotal</td>
-          <td style="padding:10px;text-align:right;font-weight:600;">${money(o.subtotal)}</td>
+          <td style="padding:10px;text-align:right;font-weight:600;">${money(
+            o.subtotal
+          )}</td>
         </tr>
         <tr>
           <td colspan="3" style="padding:10px;text-align:right;font-size:13px;color:#222;border-top:1px solid #eee;">Total</td>
-          <td style="padding:10px;text-align:right;font-weight:700;border-top:1px solid #eee;">${money(o.total)}</td>
+          <td style="padding:10px;text-align:right;font-weight:700;border-top:1px solid #eee;">${money(
+            o.total
+          )}</td>
         </tr>
       </tfoot>
     </table>
@@ -104,10 +128,26 @@ function orderHtml(o: EmailOrder) {
     <div style="display:flex;gap:16px;margin-top:16px;">
       <div style="flex:1;border:1px solid #eee;border-radius:10px;padding:10px;">
         <div style="font-size:12px;color:#666;font-weight:600;margin-bottom:6px;">Customer</div>
-        <div style="font-size:13px;color:#111;">${htmlEscape(o.customer.name)}</div>
-        <div style="font-size:13px;color:#444;">${htmlEscape(o.customer.email)}</div>
-        ${o.customer.phone ? `<div style="font-size:13px;color:#444;">${htmlEscape(o.customer.phone)}</div>` : ""}
-        ${o.customer.company ? `<div style="font-size:13px;color:#444;">${htmlEscape(o.customer.company)}</div>` : ""}
+        <div style="font-size:13px;color:#111;">${htmlEscape(
+          o.customer.name
+        )}</div>
+        <div style="font-size:13px;color:#444;">${htmlEscape(
+          o.customer.email
+        )}</div>
+        ${
+          o.customer.phone
+            ? `<div style="font-size:13px;color:#444;">${htmlEscape(
+                o.customer.phone
+              )}</div>`
+            : ""
+        }
+        ${
+          o.customer.company
+            ? `<div style="font-size:13px;color:#444;">${htmlEscape(
+                o.customer.company
+              )}</div>`
+            : ""
+        }
       </div>
       <div style="flex:1;border:1px solid #eee;border-radius:10px;padding:10px;">
         <div style="font-size:12px;color:#666;font-weight:600;margin-bottom:6px;">Address</div>
@@ -119,7 +159,9 @@ function orderHtml(o: EmailOrder) {
       o.note
         ? `<div style="border:1px solid #eee;border-radius:10px;padding:10px;margin-top:16px;">
             <div style="font-size:12px;color:#666;font-weight:600;margin-bottom:4px;">Customer note</div>
-            <div style="font-size:13px;color:#222;white-space:pre-wrap;">${htmlEscape(o.note)}</div>
+            <div style="font-size:13px;color:#222;white-space:pre-wrap;">${htmlEscape(
+              o.note
+            )}</div>
           </div>`
         : ""
     }
@@ -161,17 +203,16 @@ async function sendResendEmail({
 
 export async function sendNewOrderEmails(order: EmailOrder) {
   const html = orderHtml(order);
-  const companyTo =
-    process.env.COMPANY_ORDERS_EMAIL || "orders@example.com";
+  const companyTo = process.env.COMPANY_ORDERS_EMAIL || "orders@example.com";
 
-  // Envia para a empresa
+  // Empresa
   await sendResendEmail({
     to: companyTo,
     subject: `New Quote — #${order.id}`,
     html,
   });
 
-  // Confirmação para o cliente (silenciosa se falhar)
+  // Confirmação cliente (silenciosa se falhar)
   if (order.customer?.email) {
     try {
       await sendResendEmail({
@@ -189,3 +230,6 @@ export async function sendNewOrderEmails(order: EmailOrder) {
     }
   }
 }
+
+// ✅ alias p/ manter compatibilidade com imports antigos
+export const sendOrderEmails = sendNewOrderEmails;
