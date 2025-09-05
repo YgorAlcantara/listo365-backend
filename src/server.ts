@@ -1,7 +1,6 @@
-// backend/src/server.ts
 import "dotenv/config";
 import express from "express";
-import cors, { CorsOptions } from "cors";
+import cors from "cors";
 import cookieParser from "cookie-parser";
 import compression from "compression";
 import { prisma } from "./lib/prisma";
@@ -15,57 +14,55 @@ import { customers } from "./routes/customers";
 
 const app = express();
 
-// Behind proxy/CDN (Render/Fly/Cloudflare/etc.)
 app.set("trust proxy", 1);
 app.use(compression({ threshold: 512 }));
 
-// ---------- CORS ----------
+// ---- CORS (lista múltipla + shim defensivo) ----
 const allowedOrigins = (process.env.FRONTEND_ORIGIN || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
-// Modo liberal: útil em dev/local ou quando precisa testar de várias origens
-const allowAll =
-  process.env.CORS_ANY === "1" ||
-  allowedOrigins.length === 0 ||
-  process.env.NODE_ENV !== "production";
+// inclui origens de dev por padrão (não atrapalha prod)
+const defaultDevOrigins = new Set([
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+]);
 
-const corsOptions: CorsOptions = {
-  origin(origin, cb) {
-    // Sem Origin (curl/postman) -> ok
-    if (!origin) return cb(null, true);
-    if (allowAll) return cb(null, true);
-    if (allowedOrigins.includes(origin)) return cb(null, true);
-    return cb(new Error(`Origin ${origin} not allowed by CORS`));
-  },
-  credentials: true,
-  methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-};
+const allowSet = new Set<string>([...allowedOrigins, ...defaultDevOrigins]);
 
-app.use(cors(corsOptions));
-// Preflight rápido
-app.options("*", cors(corsOptions));
+// 1) cors() oficial
+app.use(
+  cors({
+    origin(origin, cb) {
+      if (!origin) return cb(null, true); // curl/postman
+      if (allowSet.has(origin)) return cb(null, true);
+      return cb(new Error(`Origin ${origin} not allowed by CORS`));
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  })
+);
 
-// Fallback CORS (garante cabeçalhos mesmo se algum proxy engolir o middleware)
+// 2) shim defensivo: garante headers mesmo se algo escapar
 app.use((req, res, next) => {
-  if (!res.getHeader("Access-Control-Allow-Origin")) {
-    const origin = (req.headers.origin as string) || "*";
-    // Com credentials, browsers exigem refletir o Origin; evitamos '*' se houver Origin
-    res.setHeader("Access-Control-Allow-Origin", origin || "*");
-    res.setHeader("Vary", "Origin");
-    res.setHeader("Access-Control-Allow-Credentials", "true");
-    res.setHeader(
-      "Access-Control-Allow-Methods",
-      "GET,POST,PATCH,PUT,DELETE,OPTIONS"
-    );
-    res.setHeader(
+  const origin = req.headers.origin as string | undefined;
+  if (origin && allowSet.has(origin)) {
+    res.header("Access-Control-Allow-Origin", origin);
+    res.header("Vary", "Origin");
+    res.header("Access-Control-Allow-Credentials", "true");
+    res.header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
+    res.header(
       "Access-Control-Allow-Headers",
-      "Content-Type,Authorization,X-Requested-With"
+      "Content-Type, Authorization, X-Requested-With"
     );
   }
-  if (req.method === "OPTIONS") return res.sendStatus(204);
+  if (req.method === "OPTIONS") {
+    // log útil p/ depurar preflight
+    if (origin) console.log(`[CORS] Preflight OK for ${origin} -> ${req.path}`);
+    return res.sendStatus(204);
+  }
   next();
 });
 
@@ -176,9 +173,7 @@ const port = Number(process.env.PORT || 4000);
 app.listen(port, async () => {
   console.log(`API listening on :${port}`);
   console.log(
-    `[CORS] allowAll=${allowAll} | allowedOrigins=${
-      allowedOrigins.length ? allowedOrigins.join(", ") : "(none)"
-    }`
+    `[CORS] Allowed origins: ${[...allowSet].join(", ") || "(all via cors())"}`
   );
   try {
     await prisma.$connect();

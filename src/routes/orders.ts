@@ -4,7 +4,7 @@ import { prisma } from "../lib/prisma";
 import { requireAdmin } from "../middleware/auth";
 import { z } from "zod";
 import type { Prisma } from "@prisma/client";
-import { sendOrderEmails } from "../lib/mailer"; // alias válido
+import { sendNewOrderEmails } from "../lib/mailer"; // alias válido
 
 export const orders = Router();
 
@@ -283,14 +283,26 @@ orders.post("/", async (req: Request, res: Response) => {
   });
 
   // Envia e-mails (não quebra o fluxo em caso de falha)
+  function htmlEscape(s: string) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  // Envia e-mails (não quebra o fluxo se falhar)
   try {
-    await sendOrderEmails({
+    await sendNewOrderEmails({
       id: created.id,
-      createdAt: created.createdAt.toISOString(), // ISO
+      createdAt: created.createdAt.toISOString(),
       status: created.status,
-      note: created.note ?? null,
-      subtotal: asNum(created.subtotal),
-      total: asNum(created.total),
+      note: created.note || null,
+      subtotal: Number(created.subtotal),
+      total: Number(created.total),
+      items: created.items.map((it) => ({
+        productId: it.productId,
+        productName: it.product?.name ?? null,
+        variantName: it.variant?.name ?? null,
+        quantity: it.quantity,
+        unitPrice: Number(it.unitPrice),
+      })),
       customer: {
         name: created.customer?.name || "",
         email: created.customer?.email || "",
@@ -301,27 +313,18 @@ orders.post("/", async (req: Request, res: Response) => {
       address: created.address
         ? {
             line1: created.address.line1,
-            line2: created.address.line2,
-            district: created.address.district,
-            city: created.address.city,
-            state: created.address.state,
-            postalCode: created.address.postalCode,
-            country: created.address.country,
+            line2: created.address.line2 || null,
+            district: created.address.district || null,
+            city: created.address.city || "",
+            state: created.address.state || null,
+            postalCode: created.address.postalCode || null,
+            country: created.address.country || "US",
           }
         : null,
-      items: created.items.map((it) => ({
-        productId: it.productId,
-        productName: it.product?.name ?? null,
-        variantName: it.variant?.name ?? null,
-        quantity: it.quantity,
-        unitPrice: asNum(it.unitPrice),
-      })),
     });
   } catch (e) {
     console.warn("[orders] email send failed:", (e as Error).message);
   }
-
-  res.status(201).json(created);
 });
 
 // =============== CHANGE STATUS (ADMIN) ===============
