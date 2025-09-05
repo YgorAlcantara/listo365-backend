@@ -1,4 +1,4 @@
-// src/server.ts
+// backend/src/server.ts
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -19,17 +19,26 @@ const app = express();
 app.set("trust proxy", 1);
 app.use(compression({ threshold: 512 }));
 
-// CORS (allow multiple origins via FRONTEND_ORIGIN separated by commas)
-const envOrigins = process.env.FRONTEND_ORIGIN?.split(",")
+// ---- CORS robusto (lista múltipla + preflight + headers básicos) ----
+const allowedOrigins = (process.env.FRONTEND_ORIGIN || "")
+  .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
-app.use(
-  cors({
-    origin: envOrigins && envOrigins.length ? envOrigins : true,
-    credentials: true,
-  })
-);
+const corsOptions: cors.CorsOptions = {
+  origin(origin, cb) {
+    // permite ferramentas (curl/postman) ou navegação direta
+    if (!origin) return cb(null, true);
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+    return cb(new Error(`Origin ${origin} not allowed by CORS`));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 
 // Body & cookies
 app.use(express.json({ limit: "1mb" }));
@@ -53,22 +62,13 @@ app.get("/health", async (_req, res) => {
   }
 });
 
-/**
- * Readiness + optional seed
- * GET /ready?token=YOUR_TOKEN
- * GET /ready?token=YOUR_TOKEN&seed=1
- *
- * Env:
- * - READY_TOKEN (optional): if set, must match the query token
- * - SEED_ON_READY=1 : always seeds on /ready (useful for first boot)
- */
+// Readiness (opcional, com seed)
 app.get("/ready", async (req, res) => {
   try {
     const token = String(req.query.token || "");
     if (process.env.READY_TOKEN && token !== process.env.READY_TOKEN) {
       return res.status(401).json({ error: "unauthorized" });
     }
-
     await prisma.$queryRaw`SELECT 1`;
 
     let seeded = false;
@@ -77,7 +77,6 @@ app.get("/ready", async (req, res) => {
 
     if (shouldSeed) {
       try {
-        // build output path: dist/prisma/seed.js
         const mod: any = await import("../prisma/seed.js");
         const fn = mod?.runSeed || mod?.default || mod?.main;
         if (typeof fn === "function") {
@@ -101,7 +100,7 @@ app.get("/ready", async (req, res) => {
   }
 });
 
-// Routers (order matters; define before 404)
+// Routers
 app.use("/auth", auth);
 app.use("/products", products);
 app.use("/orders", orders);
@@ -109,7 +108,7 @@ app.use("/promotions", promotions);
 app.use("/categories", categories);
 app.use("/customers", customers);
 
-// Diagnostics (optional; keep only in dev)
+// Diagnostics (dev only)
 if (process.env.NODE_ENV !== "production") {
   app.get("/_routes", (_req, res) => {
     const list: any[] = [];
@@ -118,18 +117,14 @@ if (process.env.NODE_ENV !== "production") {
       if (m.route) {
         list.push({
           path: m.route.path,
-          methods: Object.keys(m.route.methods).filter(
-            (k) => m.route.methods[k]
-          ),
+          methods: Object.keys(m.route.methods).filter((k) => m.route.methods[k]),
         });
       } else if (m.name === "router" && m.handle?.stack) {
         m.handle.stack.forEach((h: any) => {
           if (h.route)
             list.push({
               path: h.route.path,
-              methods: Object.keys(h.route.methods).filter(
-                (k) => h.route.methods[k]
-              ),
+              methods: Object.keys(h.route.methods).filter((k) => h.route.methods[k]),
             });
         });
       }
@@ -148,7 +143,7 @@ const port = Number(process.env.PORT || 4000);
 app.listen(port, async () => {
   console.log(`API listening on :${port}`);
   try {
-    await prisma.$connect(); // warm connection
+    await prisma.$connect();
   } catch (e) {
     console.error("prisma connect failed on boot:", e);
   }
