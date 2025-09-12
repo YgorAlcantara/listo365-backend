@@ -1,4 +1,3 @@
-// src/routes/products.ts
 import { Router } from "express";
 import { prisma } from "../lib/prisma";
 import { z } from "zod";
@@ -86,7 +85,6 @@ function computeSale(p: any) {
 function serializeProduct(p: any, isAdmin: boolean) {
   const firstCat = p.categories?.[0]?.category ?? null;
 
-  // Só calcula/exibe sale se promoções estiverem habilitadas
   const sale = FEATURE_PROMOS ? p.sale ?? computeSale(p) : undefined;
 
   const visPrice = (p as any).visiblePrice ?? false;
@@ -97,13 +95,13 @@ function serializeProduct(p: any, isAdmin: boolean) {
 
   const show = (flag: boolean) => (isAdmin ? true : !!flag);
 
-  // Variantes (com capa + galeria da variante)
+  // Variantes
   const variants =
     FEATURE_VAR && Array.isArray(p.variants)
       ? (p.variants as any[]).map((v) => ({
           id: v.id,
           name: v.name,
-          price: show(visPrice) ? Number(v.price) : undefined, // oculta se necessário
+          price: show(visPrice) ? Number(v.price) : undefined,
           stock: v.stock,
           active: v.active,
           sortOrder: v.sortOrder ?? 0,
@@ -159,7 +157,6 @@ function serializeProduct(p: any, isAdmin: boolean) {
 
 /** =========================
  *  GET "/" (lista; ?q, ?sort; ?all=1 p/ ADMIN)
- *  — rápido: usa SELECT apenas no que é necessário
  *  ========================= */
 products.get("/", async (req, res) => {
   const q = String(req.query.q || "").trim();
@@ -186,7 +183,6 @@ products.get("/", async (req, res) => {
   const orderBy =
     ORDER_MAP[sortParam as keyof typeof ORDER_MAP] ?? ORDER_MAP.sortOrder;
 
-  // SELECT mínimo necessário (sem include pesado)
   const select: any = {
     id: true,
     name: true,
@@ -199,8 +195,6 @@ products.get("/", async (req, res) => {
     sortOrder: true,
     packageSize: true,
     pdfUrl: true,
-
-    // Flags de visibilidade
     ...(FEATURE_VIS
       ? {
           visibleDescription: true,
@@ -210,14 +204,10 @@ products.get("/", async (req, res) => {
           visiblePrice: true,
         }
       : {}),
-
-    // Imagens do produto (ordenadas)
     images: {
       select: { url: true, sortOrder: true },
       orderBy: { sortOrder: "asc" as const },
     },
-
-    // 1 categoria "principal" (como antes)
     categories: {
       take: 1,
       select: {
@@ -233,8 +223,6 @@ products.get("/", async (req, res) => {
         },
       },
     },
-
-    // Promoções — SOMENTE se habilitado
     ...(FEATURE_PROMOS
       ? {
           promotions: {
@@ -252,7 +240,6 @@ products.get("/", async (req, res) => {
   };
 
   if (FEATURE_VAR) {
-    // Variantes e (opcional) imagens da variante
     select.variants = {
       select: {
         id: true,
@@ -282,7 +269,6 @@ products.get("/", async (req, res) => {
     select,
   });
 
-  // Cache leve no edge/CDN ou browser
   res.set("Cache-Control", "public, max-age=60, stale-while-revalidate=120");
 
   res.json(
@@ -384,8 +370,8 @@ products.post("/", requireAdmin, async (req, res) => {
     });
   }
 
-  // Variants: criar 1 a 1 para suportar nested images
-  if (FEATURE_VAR && body.variants && body.variants.length) {
+  // Variants: criar 1 a 1
+  if (FEATURE_VAR && body.variants?.length) {
     for (let i = 0; i < body.variants.length; i++) {
       const v = body.variants[i];
       const variant = await (prisma as any).productVariant.create({
@@ -413,86 +399,8 @@ products.post("/", requireAdmin, async (req, res) => {
     }
   }
 
-  // Retorna já no formato serializado
-  const select: any = {
-    id: true,
-    name: true,
-    slug: true,
-    description: true,
-    price: true,
-    imageUrl: true,
-    active: true,
-    stock: true,
-    sortOrder: true,
-    packageSize: true,
-    pdfUrl: true,
-    ...(FEATURE_VIS
-      ? {
-          visibleDescription: true,
-          visibleImages: true,
-          visiblePackageSize: true,
-          visiblePdf: true,
-          visiblePrice: true,
-        }
-      : {}),
-    images: {
-      select: { url: true, sortOrder: true },
-      orderBy: { sortOrder: "asc" as const },
-    },
-    categories: {
-      take: 1,
-      select: {
-        category: {
-          select: {
-            id: true,
-            name: true,
-            slug: true,
-            parent: { select: { id: true, name: true, slug: true } },
-          },
-        },
-      },
-    },
-    ...(FEATURE_PROMOS
-      ? {
-          promotions: {
-            select: {
-              title: true,
-              percentOff: true,
-              priceOff: true,
-              startsAt: true,
-              endsAt: true,
-              active: true,
-            },
-          },
-        }
-      : {}),
-    ...(FEATURE_VAR
-      ? {
-          variants: {
-            select: {
-              id: true,
-              name: true,
-              price: true,
-              stock: true,
-              active: true,
-              sortOrder: true,
-              sku: true,
-              imageUrl: true,
-              ...(HAS_VARIANT_IMG_MODEL
-                ? {
-                    images: {
-                      select: { url: true, sortOrder: true },
-                      orderBy: { sortOrder: "asc" as const },
-                    },
-                  }
-                : {}),
-            },
-            orderBy: { sortOrder: "asc" as const },
-          },
-        }
-      : {}),
-  };
-
+  // Retorna já serializado
+  const select = selectForReturn();
   const full = await prisma.product.findUnique({
     where: { id: created.id },
     select,
@@ -508,10 +416,10 @@ products.post("/", requireAdmin, async (req, res) => {
     );
 });
 
-/** Atualizar (ADMIN) */
-products.put("/:id", requireAdmin, async (req, res) => {
-  const body = Upsert.partial().parse(req.body);
-  const id = req.params.id;
+/** ============== Atualizar (ADMIN) ============== */
+// função compartilhada para PUT/PATCH
+async function updateProductCore(id: string, bodyRaw: any) {
+  const body = Upsert.partial().parse(bodyRaw);
 
   const patch: any = {
     description: body.description,
@@ -567,7 +475,6 @@ products.put("/:id", requireAdmin, async (req, res) => {
 
   // Variants — regravação idempotente (permite excluir)
   if (FEATURE_VAR && Object.prototype.hasOwnProperty.call(body, "variants")) {
-    // Deleta tudo (cascata removerá imagens da variante)
     await (prisma as any).productVariant.deleteMany({
       where: { productId: id },
     });
@@ -600,7 +507,15 @@ products.put("/:id", requireAdmin, async (req, res) => {
     }
   }
 
-  // Retorna já no formato serializado
+  const select = selectForReturn();
+  const full = await prisma.product.findUnique({ where: { id }, select });
+  return serializeProduct(
+    { ...full!, ...(FEATURE_PROMOS ? { sale: computeSale(full) } : {}) },
+    true
+  );
+}
+
+function selectForReturn() {
   const select: any = {
     id: true,
     name: true,
@@ -679,25 +594,34 @@ products.put("/:id", requireAdmin, async (req, res) => {
         }
       : {}),
   };
+  return select;
+}
 
-  const full = await prisma.product.findUnique({
-    where: { id },
-    select,
-  });
+// PUT (como você já tinha)
+products.put("/:id", requireAdmin, async (req, res) => {
+  const id = req.params.id;
+  const out = await updateProductCore(id, req.body);
+  res.json(out);
+});
 
-  res.json(
-    serializeProduct(
-      { ...full!, ...(FEATURE_PROMOS ? { sale: computeSale(full) } : {}) },
-      true
-    )
-  );
+// Alias PATCH — mesmo comportamento do PUT
+products.patch("/:id", requireAdmin, async (req, res) => {
+  const id = req.params.id;
+  const out = await updateProductCore(id, req.body);
+  res.json(out);
 });
 
 /** Deletar (ADMIN) — arquiva se houver pedidos */
 products.delete("/:id", requireAdmin, async (req, res) => {
   const id = req.params.id;
   try {
-    const usage = await prisma.orderItem.count({ where: { productId: id } });
+    // compatível com schemas (orderItem OU orderInquiryItem)
+    const ORDER_ITEM =
+      (prisma as any).orderItem ?? (prisma as any).orderInquiryItem;
+    const usage = ORDER_ITEM
+      ? await ORDER_ITEM.count({ where: { productId: id } })
+      : 0;
+
     if (usage > 0) {
       await prisma.product.update({ where: { id }, data: { active: false } });
       return res.status(200).json({
@@ -732,7 +656,12 @@ products.delete("/:id", requireAdmin, async (req, res) => {
 products.delete("/:id/hard", requireAdmin, async (req, res) => {
   const id = req.params.id;
   try {
-    const usage = await prisma.orderItem.count({ where: { productId: id } });
+    const ORDER_ITEM =
+      (prisma as any).orderItem ?? (prisma as any).orderInquiryItem;
+    const usage = ORDER_ITEM
+      ? await ORDER_ITEM.count({ where: { productId: id } })
+      : 0;
+
     if (usage > 0) {
       return res.status(409).json({
         error: "in_use",
@@ -771,10 +700,10 @@ products.patch("/:id/sort-order", requireAdmin, async (req, res) => {
 });
 
 /** Arquivar / Desarquivar (ADMIN) */
-products.patch("/:id/archive", requireAdmin, async (req, res) => {
+products.patch("/:id/archive", requireAdmin, async (_req, res) => {
   try {
     await prisma.product.update({
-      where: { id: req.params.id },
+      where: { id: _req.params.id },
       data: { active: false },
     });
     return res.json({ ok: true });
@@ -783,10 +712,10 @@ products.patch("/:id/archive", requireAdmin, async (req, res) => {
     return res.status(500).json({ error: "archive_failed" });
   }
 });
-products.patch("/:id/unarchive", requireAdmin, async (req, res) => {
+products.patch("/:id/unarchive", requireAdmin, async (_req, res) => {
   try {
     await prisma.product.update({
-      where: { id: req.params.id },
+      where: { id: _req.params.id },
       data: { active: true },
     });
     return res.json({ ok: true });
@@ -835,8 +764,101 @@ products.patch("/:id/visibility", requireAdmin, async (req, res) => {
   res.json({ ok: true, visibility: vis });
 });
 
+/** ========================= Variantes (ADMIN) ========================= */
+
+// PATCH (editar/toggle) variante específica
+products.patch(
+  "/products/:productId/variants/:variantId", // rota “namespaced” para evitar colisão
+  requireAdmin,
+  async (req, res) => {
+    if (!FEATURE_VAR) return res.status(404).json({ error: "variants_not_enabled" });
+    const { productId, variantId } = req.params;
+
+    const VariantPatch = z
+      .object({
+        name: z.string().min(1).optional(),
+        price: z.coerce.number().nonnegative().optional(),
+        stock: z.coerce.number().int().min(0).optional(),
+        sortOrder: z.coerce.number().int().optional(),
+        active: z.coerce.boolean().optional(),
+        sku: z.string().nullable().optional(),
+        imageUrl: urlish.nullable().optional(),
+        images: z.array(urlish).max(10).optional(), // se enviar, regrava galeria
+      })
+      .partial();
+
+    const b = VariantPatch.parse(req.body);
+
+    // Confere que a variante pertence ao produto
+    const exists = await (prisma as any).productVariant.findFirst({
+      where: { id: variantId, productId },
+      select: { id: true },
+    });
+    if (!exists) return res.status(404).json({ error: "variant_not_found" });
+
+    const data: any = {};
+    if (b.name !== undefined) data.name = b.name;
+    if (b.price !== undefined) data.price = b.price;
+    if (b.stock !== undefined) data.stock = b.stock;
+    if (b.sortOrder !== undefined) data.sortOrder = b.sortOrder;
+    if (b.active !== undefined) data.active = b.active;
+    if (b.sku !== undefined) data.sku = b.sku;
+    if (b.imageUrl !== undefined) data.imageUrl = b.imageUrl;
+
+    await (prisma as any).productVariant.update({
+      where: { id: variantId },
+      data,
+    });
+
+    // Se enviou images, regrava galeria
+    if (HAS_VARIANT_IMG_MODEL && b.images) {
+      await (prisma as any).productVariantImage.deleteMany({
+        where: { variantId },
+      });
+      if (b.images.length) {
+        await (prisma as any).productVariantImage.createMany({
+          data: b.images.map((url, idx) => ({
+            variantId,
+            url,
+            sortOrder: (idx + 1) * 10,
+          })),
+        });
+      }
+    }
+
+    return res.json({ ok: true });
+  }
+);
+
+// DELETE variante
+products.delete(
+  "/products/:productId/variants/:variantId",
+  requireAdmin,
+  async (req, res) => {
+    if (!FEATURE_VAR) return res.status(404).json({ error: "variants_not_enabled" });
+    const { productId, variantId } = req.params;
+
+    const exists = await (prisma as any).productVariant.findFirst({
+      where: { id: variantId, productId },
+      select: { id: true },
+    });
+    if (!exists) return res.status(404).json({ error: "variant_not_found" });
+
+    await prisma.$transaction(
+      [
+        HAS_VARIANT_IMG_MODEL
+          ? (prisma as any).productVariantImage.deleteMany({ where: { variantId } })
+          : null,
+        (prisma as any).productVariant.delete({ where: { id: variantId } }),
+      ].filter(Boolean) as any
+    );
+
+    return res.json({ ok: true, deleted: true });
+  }
+);
+
 /** =========================
- *  GET "/:idOrSlug"  (detalhe) — SELECT enxuto
+ *  GET "/:idOrSlug"  (detalhe)
  *  ========================= */
 products.get("/:idOrSlug", async (req, res) => {
   const idOrSlug = req.params.idOrSlug;
@@ -936,7 +958,6 @@ products.get("/:idOrSlug", async (req, res) => {
   if (!isAdmin && !p.active)
     return res.status(404).json({ error: "not_found" });
 
-  // cache leve pro detalhe também
   res.set("Cache-Control", "public, max-age=30, stale-while-revalidate=60");
 
   return res.json(

@@ -1,4 +1,3 @@
-// backend/src/server.ts
 import "dotenv/config";
 import express, { NextFunction } from "express";
 import cors from "cors";
@@ -32,8 +31,12 @@ const corsOptions: cors.CorsOptions = {
     return cb(new Error(`Origin ${origin} not allowed by CORS`));
   },
   credentials: true,
-  methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  // ✅ inclui PUT (estava faltando)
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  // inclui Accept; Authorization + Content-Type já estavam OK
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+  // expor filename do CSV, etc.
+  exposedHeaders: ["Content-Disposition"],
 };
 
 app.use(cors(corsOptions));
