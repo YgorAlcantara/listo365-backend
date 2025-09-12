@@ -95,7 +95,7 @@ function serializeProduct(p: any, isAdmin: boolean) {
 
   const show = (flag: boolean) => (isAdmin ? true : !!flag);
 
-  // Variantes
+  // Variantes (com capa + galeria)
   const variants =
     FEATURE_VAR && Array.isArray(p.variants)
       ? (p.variants as any[]).map((v) => ({
@@ -269,6 +269,7 @@ products.get("/", async (req, res) => {
     select,
   });
 
+  // Cache leve
   res.set("Cache-Control", "public, max-age=60, stale-while-revalidate=120");
 
   res.json(
@@ -301,8 +302,8 @@ const VariantShape = z.object({
   sortOrder: z.coerce.number().int().catch(0),
   active: z.coerce.boolean().catch(true),
   sku: z.string().optional(),
-  imageUrl: urlish.optional(), // capa opcional da variante
-  images: z.array(urlish).max(10).optional(), // galeria da variante
+  imageUrl: urlish.optional(),
+  images: z.array(urlish).max(10).optional(),
 });
 
 const Upsert = z.object({
@@ -319,6 +320,89 @@ const Upsert = z.object({
   visibility: VisibilityShape,
   variants: z.array(VariantShape).optional(),
 });
+
+/** Helper de SELECT pro retorno completo */
+function selectForReturn() {
+  const select: any = {
+    id: true,
+    name: true,
+    slug: true,
+    description: true,
+    price: true,
+    imageUrl: true,
+    active: true,
+    stock: true,
+    sortOrder: true,
+    packageSize: true,
+    pdfUrl: true,
+    ...(FEATURE_VIS
+      ? {
+          visibleDescription: true,
+          visibleImages: true,
+          visiblePackageSize: true,
+          visiblePdf: true,
+          visiblePrice: true,
+        }
+      : {}),
+    images: {
+      select: { url: true, sortOrder: true },
+      orderBy: { sortOrder: "asc" as const },
+    },
+    categories: {
+      take: 1,
+      select: {
+        category: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+            parent: { select: { id: true, name: true, slug: true } },
+          },
+        },
+      },
+    },
+    ...(FEATURE_PROMOS
+      ? {
+          promotions: {
+            select: {
+              title: true,
+              percentOff: true,
+              priceOff: true,
+              startsAt: true,
+              endsAt: true,
+              active: true,
+            },
+          },
+        }
+      : {}),
+    ...(FEATURE_VAR
+      ? {
+          variants: {
+            select: {
+              id: true,
+              name: true,
+              price: true,
+              stock: true,
+              active: true,
+              sortOrder: true,
+              sku: true,
+              imageUrl: true,
+              ...(HAS_VARIANT_IMG_MODEL
+                ? {
+                    images: {
+                      select: { url: true, sortOrder: true },
+                      orderBy: { sortOrder: "asc" as const },
+                    },
+                  }
+                : {}),
+            },
+            orderBy: { sortOrder: "asc" as const },
+          },
+        }
+      : {}),
+  };
+  return select;
+}
 
 /** Criar (ADMIN) */
 products.post("/", requireAdmin, async (req, res) => {
@@ -370,7 +454,7 @@ products.post("/", requireAdmin, async (req, res) => {
     });
   }
 
-  // Variants: criar 1 a 1
+  // Variants: criar 1 a 1 para suportar nested images
   if (FEATURE_VAR && body.variants?.length) {
     for (let i = 0; i < body.variants.length; i++) {
       const v = body.variants[i];
@@ -399,13 +483,13 @@ products.post("/", requireAdmin, async (req, res) => {
     }
   }
 
-  // Retorna já serializado
   const select = selectForReturn();
   const full = await prisma.product.findUnique({
     where: { id: created.id },
     select,
   });
 
+  res.set("Cache-Control", "no-store");
   res
     .status(201)
     .json(
@@ -515,99 +599,19 @@ async function updateProductCore(id: string, bodyRaw: any) {
   );
 }
 
-function selectForReturn() {
-  const select: any = {
-    id: true,
-    name: true,
-    slug: true,
-    description: true,
-    price: true,
-    imageUrl: true,
-    active: true,
-    stock: true,
-    sortOrder: true,
-    packageSize: true,
-    pdfUrl: true,
-    ...(FEATURE_VIS
-      ? {
-          visibleDescription: true,
-          visibleImages: true,
-          visiblePackageSize: true,
-          visiblePdf: true,
-          visiblePrice: true,
-        }
-      : {}),
-    images: {
-      select: { url: true, sortOrder: true },
-      orderBy: { sortOrder: "asc" as const },
-    },
-    categories: {
-      take: 1,
-      select: {
-        category: {
-          select: {
-            id: true,
-            name: true,
-            slug: true,
-            parent: { select: { id: true, name: true, slug: true } },
-          },
-        },
-      },
-    },
-    ...(FEATURE_PROMOS
-      ? {
-          promotions: {
-            select: {
-              title: true,
-              percentOff: true,
-              priceOff: true,
-              startsAt: true,
-              endsAt: true,
-              active: true,
-            },
-          },
-        }
-      : {}),
-    ...(FEATURE_VAR
-      ? {
-          variants: {
-            select: {
-              id: true,
-              name: true,
-              price: true,
-              stock: true,
-              active: true,
-              sortOrder: true,
-              sku: true,
-              imageUrl: true,
-              ...(HAS_VARIANT_IMG_MODEL
-                ? {
-                    images: {
-                      select: { url: true, sortOrder: true },
-                      orderBy: { sortOrder: "asc" as const },
-                    },
-                  }
-                : {}),
-            },
-            orderBy: { sortOrder: "asc" as const },
-          },
-        }
-      : {}),
-  };
-  return select;
-}
-
-// PUT (como você já tinha)
+// PUT (completo)
 products.put("/:id", requireAdmin, async (req, res) => {
   const id = req.params.id;
   const out = await updateProductCore(id, req.body);
+  res.set("Cache-Control", "no-store");
   res.json(out);
 });
 
-// Alias PATCH — mesmo comportamento do PUT
+// PATCH alias — mesmo comportamento do PUT
 products.patch("/:id", requireAdmin, async (req, res) => {
   const id = req.params.id;
   const out = await updateProductCore(id, req.body);
+  res.set("Cache-Control", "no-store");
   res.json(out);
 });
 
@@ -615,7 +619,6 @@ products.patch("/:id", requireAdmin, async (req, res) => {
 products.delete("/:id", requireAdmin, async (req, res) => {
   const id = req.params.id;
   try {
-    // compatível com schemas (orderItem OU orderInquiryItem)
     const ORDER_ITEM =
       (prisma as any).orderItem ?? (prisma as any).orderInquiryItem;
     const usage = ORDER_ITEM
@@ -624,6 +627,7 @@ products.delete("/:id", requireAdmin, async (req, res) => {
 
     if (usage > 0) {
       await prisma.product.update({ where: { id }, data: { active: false } });
+      res.set("Cache-Control", "no-store");
       return res.status(200).json({
         ok: true,
         archived: true,
@@ -645,6 +649,7 @@ products.delete("/:id", requireAdmin, async (req, res) => {
         prisma.product.delete({ where: { id } }),
       ].filter(Boolean) as any
     );
+    res.set("Cache-Control", "no-store");
     return res.json({ ok: true, deleted: true });
   } catch (err) {
     console.error("delete product failed", err);
@@ -682,6 +687,7 @@ products.delete("/:id/hard", requireAdmin, async (req, res) => {
         prisma.product.delete({ where: { id } }),
       ].filter(Boolean) as any
     );
+    res.set("Cache-Control", "no-store");
     return res.json({ ok: true, deleted: true });
   } catch (err) {
     console.error("hard delete failed", err);
@@ -696,28 +702,31 @@ products.patch("/:id/sort-order", requireAdmin, async (req, res) => {
     where: { id: req.params.id },
     data: { sortOrder: body.sortOrder },
   });
+  res.set("Cache-Control", "no-store");
   res.json({ ok: true });
 });
 
 /** Arquivar / Desarquivar (ADMIN) */
-products.patch("/:id/archive", requireAdmin, async (_req, res) => {
+products.patch("/:id/archive", requireAdmin, async (req, res) => {
   try {
     await prisma.product.update({
-      where: { id: _req.params.id },
+      where: { id: req.params.id },
       data: { active: false },
     });
+    res.set("Cache-Control", "no-store");
     return res.json({ ok: true });
   } catch (err) {
     console.error("archive product failed", err);
     return res.status(500).json({ error: "archive_failed" });
   }
 });
-products.patch("/:id/unarchive", requireAdmin, async (_req, res) => {
+products.patch("/:id/unarchive", requireAdmin, async (req, res) => {
   try {
     await prisma.product.update({
-      where: { id: _req.params.id },
+      where: { id: req.params.id },
       data: { active: true },
     });
+    res.set("Cache-Control", "no-store");
     return res.json({ ok: true });
   } catch (err) {
     console.error("unarchive product failed", err);
@@ -761,17 +770,19 @@ products.patch("/:id/visibility", requireAdmin, async (req, res) => {
     images: (updated as any).visibleImages ?? true,
     description: (updated as any).visibleDescription ?? true,
   };
+  res.set("Cache-Control", "no-store");
   res.json({ ok: true, visibility: vis });
 });
 
 /** ========================= Variantes (ADMIN) ========================= */
+/** Atenção: como o router é montado em /products, os paths AQUI NÃO repetem "/products" */
 
-// PATCH (editar/toggle) variante específica
 products.patch(
-  "/products/:productId/variants/:variantId", // rota “namespaced” para evitar colisão
+  "/:productId/variants/:variantId",
   requireAdmin,
   async (req, res) => {
-    if (!FEATURE_VAR) return res.status(404).json({ error: "variants_not_enabled" });
+    if (!FEATURE_VAR)
+      return res.status(404).json({ error: "variants_not_enabled" });
     const { productId, variantId } = req.params;
 
     const VariantPatch = z
@@ -789,7 +800,7 @@ products.patch(
 
     const b = VariantPatch.parse(req.body);
 
-    // Confere que a variante pertence ao produto
+    // Confirma vínculo variante-produto
     const exists = await (prisma as any).productVariant.findFirst({
       where: { id: variantId, productId },
       select: { id: true },
@@ -826,16 +837,17 @@ products.patch(
       }
     }
 
+    res.set("Cache-Control", "no-store");
     return res.json({ ok: true });
   }
 );
 
-// DELETE variante
 products.delete(
-  "/products/:productId/variants/:variantId",
+  "/:productId/variants/:variantId",
   requireAdmin,
   async (req, res) => {
-    if (!FEATURE_VAR) return res.status(404).json({ error: "variants_not_enabled" });
+    if (!FEATURE_VAR)
+      return res.status(404).json({ error: "variants_not_enabled" });
     const { productId, variantId } = req.params;
 
     const exists = await (prisma as any).productVariant.findFirst({
@@ -847,12 +859,15 @@ products.delete(
     await prisma.$transaction(
       [
         HAS_VARIANT_IMG_MODEL
-          ? (prisma as any).productVariantImage.deleteMany({ where: { variantId } })
+          ? (prisma as any).productVariantImage.deleteMany({
+              where: { variantId },
+            })
           : null,
         (prisma as any).productVariant.delete({ where: { id: variantId } }),
       ].filter(Boolean) as any
     );
 
+    res.set("Cache-Control", "no-store");
     return res.json({ ok: true, deleted: true });
   }
 );
@@ -959,7 +974,6 @@ products.get("/:idOrSlug", async (req, res) => {
     return res.status(404).json({ error: "not_found" });
 
   res.set("Cache-Control", "public, max-age=30, stale-while-revalidate=60");
-
   return res.json(
     serializeProduct(
       { ...p, ...(FEATURE_PROMOS ? { sale: computeSale(p) } : {}) },
