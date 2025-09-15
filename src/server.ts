@@ -14,35 +14,42 @@ import { customers } from "./routes/customers";
 
 const app = express();
 
-// Behind proxy/CDN (Render/Fly/Cloudflare/etc.)
+// Behind proxy/CDN
 app.set("trust proxy", 1);
 app.use(compression({ threshold: 512 }));
 
-// ---- CORS robusto (lista múltipla + preflight + headers básicos) ----
-const allowedOrigins = (process.env.FRONTEND_ORIGIN || "")
+// -------- CORS robusto --------
+const fromEnv = (process.env.FRONTEND_ORIGIN || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
+const allowList = new Set(fromEnv);
+const allowRegex = [
+  /^https?:\/\/(www\.)?listo365cleaningsolutions\.com$/,
+  /^https?:\/\/.*\.vercel\.app$/,
+  /^http:\/\/localhost:(\d{2,5})$/,
+];
+
+console.log("[CORS] allowList =", [...allowList]);
+console.log("[CORS] regex    =", allowRegex.map(String));
+
 const corsOptions: cors.CorsOptions = {
   origin(origin, cb) {
     if (!origin) return cb(null, true); // curl/postman
-    if (allowedOrigins.includes(origin)) return cb(null, true);
+    if (allowList.has(origin)) return cb(null, true);
+    if (allowRegex.some((re) => re.test(origin))) return cb(null, true);
     return cb(new Error(`Origin ${origin} not allowed by CORS`));
   },
   credentials: true,
-  // ✅ inclui PUT (estava faltando)
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  // inclui Accept; Authorization + Content-Type já estavam OK
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
-  // expor filename do CSV, etc.
   exposedHeaders: ["Content-Disposition"],
 };
 
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 
-// Body & cookies
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 
@@ -52,7 +59,7 @@ app.get("/", (_req, res) => {
   res.json({ ok: true, service: "listo365-backend" });
 });
 
-// Health (DB ping only)
+// Health
 app.get("/health", async (_req, res) => {
   res.set("Cache-Control", "no-store");
   try {
@@ -64,7 +71,7 @@ app.get("/health", async (_req, res) => {
   }
 });
 
-// Readiness (opcional, com seed)
+// Readiness (+seed opcional)
 app.get("/ready", async (req, res) => {
   try {
     const token = String(req.query.token || "");
@@ -89,9 +96,7 @@ app.get("/ready", async (req, res) => {
         }
       } catch (e) {
         console.error("seed failed in /ready:", e);
-        return res
-          .status(500)
-          .json({ ok: false, db: true, seeded: false, error: "seed_failed" });
+        return res.status(500).json({ ok: false, db: true, seeded: false, error: "seed_failed" });
       }
     }
 
@@ -110,21 +115,14 @@ app.use("/promotions", promotions);
 app.use("/categories", categories);
 app.use("/customers", customers);
 
-// Error handler global — garante resposta JSON + CORS mesmo em erros
-app.use(
-  (
-    err: any,
-    _req: express.Request,
-    res: express.Response,
-    _next: NextFunction
-  ) => {
-    console.error("unhandled error:", err);
-    if (res.headersSent) return;
-    res.status(500).json({ error: "internal_error" });
-  }
-);
+// Error handler
+app.use((err: any, _req: express.Request, res: express.Response, _next: NextFunction) => {
+  console.error("unhandled error:", err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: "internal_error" });
+});
 
-// Diagnostics (dev only)
+// Dev routes inspector
 if (process.env.NODE_ENV !== "production") {
   // @ts-ignore
   app.get("/_routes", (_req, res) => {
@@ -134,18 +132,14 @@ if (process.env.NODE_ENV !== "production") {
       if (m.route) {
         list.push({
           path: m.route.path,
-          methods: Object.keys(m.route.methods).filter(
-            (k) => m.route.methods[k]
-          ),
+          methods: Object.keys(m.route.methods).filter((k) => m.route.methods[k]),
         });
       } else if (m.name === "router" && m.handle?.stack) {
         m.handle.stack.forEach((h: any) => {
           if (h.route)
             list.push({
               path: h.route.path,
-              methods: Object.keys(h.route.methods).filter(
-                (k) => h.route.methods[k]
-              ),
+              methods: Object.keys(h.route.methods).filter((k) => h.route.methods[k]),
             });
         });
       }
@@ -155,9 +149,7 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 // 404
-app.use((req, res) =>
-  res.status(404).json({ error: "not_found", path: req.path })
-);
+app.use((req, res) => res.status(404).json({ error: "not_found", path: req.path }));
 
 // Start
 const port = Number(process.env.PORT || 4000);
@@ -171,17 +163,5 @@ app.listen(port, async () => {
 });
 
 // Graceful shutdown
-process.on("SIGINT", async () => {
-  try {
-    await prisma.$disconnect();
-  } finally {
-    process.exit(0);
-  }
-});
-process.on("SIGTERM", async () => {
-  try {
-    await prisma.$disconnect();
-  } finally {
-    process.exit(0);
-  }
-});
+process.on("SIGINT", async () => { try { await prisma.$disconnect(); } finally { process.exit(0); } });
+process.on("SIGTERM", async () => { try { await prisma.$disconnect(); } finally { process.exit(0); } });
