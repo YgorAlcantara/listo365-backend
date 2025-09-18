@@ -43,7 +43,12 @@ const corsOptions: cors.CorsOptions = {
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Requested-With",
+    "Accept",
+  ],
   exposedHeaders: ["Content-Disposition"],
 };
 
@@ -96,7 +101,9 @@ app.get("/ready", async (req, res) => {
         }
       } catch (e) {
         console.error("seed failed in /ready:", e);
-        return res.status(500).json({ ok: false, db: true, seeded: false, error: "seed_failed" });
+        return res
+          .status(500)
+          .json({ ok: false, db: true, seeded: false, error: "seed_failed" });
       }
     }
 
@@ -115,12 +122,28 @@ app.use("/promotions", promotions);
 app.use("/categories", categories);
 app.use("/customers", customers);
 
-// Error handler
-app.use((err: any, _req: express.Request, res: express.Response, _next: NextFunction) => {
-  console.error("unhandled error:", err);
-  if (res.headersSent) return;
-  res.status(500).json({ error: "internal_error" });
-});
+// Error handler global — garante resposta JSON + CORS mesmo em erros
+app.use(
+  (
+    err: any,
+    _req: express.Request,
+    res: express.Response,
+    _next: NextFunction
+  ) => {
+    console.error("unhandled error:", {
+      name: err?.name,
+      code: err?.code,
+      message: err?.message,
+      meta: err?.meta,
+    });
+    if (res.headersSent) return;
+    res.status(500).json({
+      error: "internal_error",
+      code: err?.code ?? null,
+      message: err?.message ?? null,
+    });
+  }
+);
 
 // Dev routes inspector
 if (process.env.NODE_ENV !== "production") {
@@ -132,14 +155,18 @@ if (process.env.NODE_ENV !== "production") {
       if (m.route) {
         list.push({
           path: m.route.path,
-          methods: Object.keys(m.route.methods).filter((k) => m.route.methods[k]),
+          methods: Object.keys(m.route.methods).filter(
+            (k) => m.route.methods[k]
+          ),
         });
       } else if (m.name === "router" && m.handle?.stack) {
         m.handle.stack.forEach((h: any) => {
           if (h.route)
             list.push({
               path: h.route.path,
-              methods: Object.keys(h.route.methods).filter((k) => h.route.methods[k]),
+              methods: Object.keys(h.route.methods).filter(
+                (k) => h.route.methods[k]
+              ),
             });
         });
       }
@@ -149,7 +176,9 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 // 404
-app.use((req, res) => res.status(404).json({ error: "not_found", path: req.path }));
+app.use((req, res) =>
+  res.status(404).json({ error: "not_found", path: req.path })
+);
 
 // Start
 const port = Number(process.env.PORT || 4000);
@@ -163,5 +192,17 @@ app.listen(port, async () => {
 });
 
 // Graceful shutdown
-process.on("SIGINT", async () => { try { await prisma.$disconnect(); } finally { process.exit(0); } });
-process.on("SIGTERM", async () => { try { await prisma.$disconnect(); } finally { process.exit(0); } });
+process.on("SIGINT", async () => {
+  try {
+    await prisma.$disconnect();
+  } finally {
+    process.exit(0);
+  }
+});
+process.on("SIGTERM", async () => {
+  try {
+    await prisma.$disconnect();
+  } finally {
+    process.exit(0);
+  }
+});

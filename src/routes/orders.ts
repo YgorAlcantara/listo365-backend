@@ -18,6 +18,7 @@ type OrderStatus =
   | "COMPLETED"
   | "REFUSED"
   | "CANCELLED";
+
 const STATUS_VALUES: OrderStatus[] = [
   "RECEIVED",
   "IN_PROGRESS",
@@ -32,6 +33,19 @@ function asNum(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+type VariantDelegate = {
+  findUnique?: (args: any) => Promise<any>;
+  update?: (args: any) => Promise<any>;
+};
+
+function resolveVariantDelegate(client: unknown): VariantDelegate | null {
+  const anyClient = client as any;
+  // suporta clientes com .productVariant (mais comum) ou .variant
+  const delegate = anyClient?.productVariant ?? anyClient?.variant ?? null;
+  if (!delegate) return null;
+  return delegate as VariantDelegate;
+}
+
 async function applyStockDelta(
   tx: Prisma.TransactionClient,
   items: Array<{
@@ -44,10 +58,12 @@ async function applyStockDelta(
   const variantDelegate = resolveVariantDelegate(tx);
   for (const it of items) {
     const delta = direction === "dec" ? -it.quantity : it.quantity;
+
     await tx.product.update({
       where: { id: it.productId },
       data: { stock: { increment: delta } },
     });
+
     if (it.variantId && variantDelegate?.update) {
       await variantDelegate.update({
         where: { id: it.variantId },
@@ -55,18 +71,6 @@ async function applyStockDelta(
       });
     }
   }
-}
-
-type VariantDelegate = {
-  findUnique?: (args: any) => Promise<any>;
-  update?: (args: any) => Promise<any>;
-};
-
-function resolveVariantDelegate(client: unknown): VariantDelegate | null {
-  const anyClient = client as any;
-  const delegate = anyClient?.productVariant ?? anyClient?.variant ?? null;
-  if (!delegate) return null;
-  return delegate as VariantDelegate;
 }
 
 function calcTotals(items: Array<{ quantity: number; unitPrice: number }>) {
@@ -182,6 +186,7 @@ orders.post("/", async (req: Request, res: Response) => {
           quantity: z.number().int().positive("Quantity must be positive."),
           unitPrice: z.number().nonnegative().optional(),
           variantId: z.string().optional().nullable(),
+          // front pode mandar variantName; a API ignora no create (não há coluna garantida)
           variantName: z.string().optional().nullable(),
         })
       )
@@ -200,45 +205,50 @@ orders.post("/", async (req: Request, res: Response) => {
 
   try {
     const variantDelegate = resolveVariantDelegate(prisma);
-    // hydrate unitPrice if variantId is provided
+
+    // hidrata unitPrice com base no variant (ou product) quando não vier do front
     const hydratedItems = await Promise.all(
       body.items.map(async (it) => {
-        if (!it.variantId || !variantDelegate?.findUnique) {
+        // 1) tentar via variant
+        if (it.variantId && variantDelegate?.findUnique) {
+          const variant = await variantDelegate.findUnique({
+            where: { id: it.variantId },
+          });
+          if (!variant) {
+            // evita P2003 com mensagem clara
+            const err: any = new Error("Variant not found.");
+            err.code = "VARIANT_NOT_FOUND";
+            throw err;
+          }
+          const priceFromVariant = Number(variant?.price ?? 0);
           return {
             ...it,
-            unitPrice: typeof it.unitPrice === "number" ? it.unitPrice : 0,
-            variantName: it.variantName ?? null,
+            unitPrice:
+              typeof it.unitPrice === "number"
+                ? it.unitPrice
+                : priceFromVariant,
           };
         }
-        // ✅ Ajuste para seu modelo Prisma (provável "productVariant")
-        const variant = await variantDelegate.findUnique({
-          where: { id: it.variantId },
+
+        // 2) fallback: tentar preço do produto
+        const product = await prisma.product.findUnique({
+          where: { id: it.productId },
+          select: { price: true },
         });
-        if (!variant) {
-          // evita P2003 explicando a causa
-          throw Object.assign(new Error("Variant not found."), {
-            code: "VARIANT_NOT_FOUND",
-          });
-        }
-        const fallbackPrice = Number(variant?.price ?? 0);
-        const variantName = it.variantName ?? variant?.name ?? null;
+        const priceFromProduct = Number(product?.price ?? 0);
         return {
           ...it,
           unitPrice:
-            typeof it.unitPrice === "number" ? it.unitPrice : fallbackPrice,
-          variantName,
+            typeof it.unitPrice === "number" ? it.unitPrice : priceFromProduct,
         };
       })
     );
-    const hasVariantDelegate =
-      typeof variantDelegate?.findUnique === "function" ||
-      typeof variantDelegate?.update === "function";
 
     const totals = calcTotals(hydratedItems);
 
     const created = await prisma.$transaction(async (tx) => {
       const customer = await tx.customer.upsert({
-        where: { email: body.customer.email },
+        where: { email: body.customer.email.toLowerCase() },
         update: {
           name: body.customer.name,
           phone: body.customer.phone ?? undefined,
@@ -246,7 +256,7 @@ orders.post("/", async (req: Request, res: Response) => {
           marketingOptIn: body.customer.marketingOptIn ?? false,
         },
         create: {
-          email: body.customer.email,
+          email: body.customer.email.toLowerCase(),
           name: body.customer.name,
           phone: body.customer.phone ?? undefined,
           company: body.customer.company ?? undefined,
@@ -288,18 +298,17 @@ orders.post("/", async (req: Request, res: Response) => {
           currency: "USD",
           items: {
             create: hydratedItems.map((it) => {
-              const baseItem = {
+              // base sempre válido
+              const base: any = {
                 productId: it.productId,
                 quantity: it.quantity,
                 unitPrice: it.unitPrice ?? 0,
               };
-              return hasVariantDelegate
-                ? {
-                    ...baseItem,
-                    variantId: it.variantId ?? null,
-                    variantName: it.variantName ?? null,
-                  }
-                : baseItem;
+              // se existir relação "variant" em OrderItem, conecte assim:
+              if (it.variantId) {
+                base.variant = { connect: { id: it.variantId } };
+              }
+              return base;
             }),
           },
         },
@@ -359,22 +368,27 @@ orders.post("/", async (req: Request, res: Response) => {
 
     return res.status(201).json(created);
   } catch (e: any) {
-    // Map Prisma known errors and our custom guard
+    // Mapeia erros conhecidos do Prisma e os nossos
     if (e?.code === "VARIANT_NOT_FOUND") {
       return res.status(400).json({ error: "variant_not_found" });
     }
     if (e?.code === "P2003") {
-      // FK error
+      // FK error: productId/variant inválidos
       return res
         .status(400)
-        .json({ error: "invalid_variant", message: "Invalid variantId." });
+        .json({ error: "invalid_fk", message: "Invalid product/variant id." });
     }
     if (e?.code === "P2002") {
       return res
         .status(400)
         .json({ error: "conflict", message: "Duplicated." });
     }
-    console.error("[orders.create] unexpected error:", e);
+    console.error("[orders.create] unexpected error:", {
+      name: e?.name,
+      code: e?.code,
+      message: e?.message,
+      meta: e?.meta,
+    });
     return res.status(500).json({ error: "internal_error" });
   }
 });
@@ -405,7 +419,7 @@ orders.patch(
           current.items.map((i) => ({
             productId: i.productId,
             quantity: i.quantity,
-            variantId: i.variantId ?? null,
+            variantId: (i as any).variantId ?? null,
           })),
           "dec"
         );
@@ -415,7 +429,7 @@ orders.patch(
           current.items.map((i) => ({
             productId: i.productId,
             quantity: i.quantity,
-            variantId: i.variantId ?? null,
+            variantId: (i as any).variantId ?? null,
           })),
           "inc"
         );
