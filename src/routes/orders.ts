@@ -41,32 +41,20 @@ async function applyStockDelta(
   }>,
   direction: "dec" | "inc"
 ) {
-  const variantDelegate = resolveVariantDelegate(tx);
   for (const it of items) {
     const delta = direction === "dec" ? -it.quantity : it.quantity;
     await tx.product.update({
       where: { id: it.productId },
       data: { stock: { increment: delta } },
     });
-    if (it.variantId && variantDelegate?.update) {
-      await variantDelegate.update({
+    if (it.variantId) {
+      // Ajuste conforme seu modelo Prisma (Variant vs ProductVariant)
+      await (tx as any).variant.update({
         where: { id: it.variantId },
         data: { stock: { increment: delta } },
       });
     }
   }
-}
-
-type VariantDelegate = {
-  findUnique?: (args: any) => Promise<any>;
-  update?: (args: any) => Promise<any>;
-};
-
-function resolveVariantDelegate(client: unknown): VariantDelegate | null {
-  const anyClient = client as any;
-  const delegate = anyClient?.productVariant ?? anyClient?.variant ?? null;
-  if (!delegate) return null;
-  return delegate as VariantDelegate;
 }
 
 function calcTotals(items: Array<{ quantity: number; unitPrice: number }>) {
@@ -199,19 +187,17 @@ orders.post("/", async (req: Request, res: Response) => {
   const body = parsed.data;
 
   try {
-    const variantDelegate = resolveVariantDelegate(prisma);
     // hydrate unitPrice if variantId is provided
     const hydratedItems = await Promise.all(
       body.items.map(async (it) => {
-        if (!it.variantId || !variantDelegate?.findUnique) {
+        if (!it.variantId) {
           return {
             ...it,
             unitPrice: typeof it.unitPrice === "number" ? it.unitPrice : 0,
-            variantName: it.variantName ?? null,
           };
         }
-        // ✅ Ajuste para seu modelo Prisma (provável "productVariant")
-        const variant = await variantDelegate.findUnique({
+        // ✅ Ajuste para seu modelo Prisma (provável "variant")
+        const variant = await (prisma as any).variant.findUnique({
           where: { id: it.variantId },
         });
         if (!variant) {
