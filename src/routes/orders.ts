@@ -48,8 +48,7 @@ async function applyStockDelta(
       data: { stock: { increment: delta } },
     });
     if (it.variantId) {
-      // Ajuste conforme seu modelo Prisma (Variant vs ProductVariant)
-      await (tx as any).variant.update({
+      await tx.productVariant.update({
         where: { id: it.variantId },
         data: { stock: { increment: delta } },
       });
@@ -196,8 +195,8 @@ orders.post("/", async (req: Request, res: Response) => {
             unitPrice: typeof it.unitPrice === "number" ? it.unitPrice : 0,
           };
         }
-        // ✅ Ajuste para seu modelo Prisma (provável "variant")
-        const variant = await (prisma as any).variant.findUnique({
+        // ✅ Ajuste para seu modelo Prisma (provável "productVariant")
+        const variant = await prisma.productVariant.findUnique({
           where: { id: it.variantId },
         });
         if (!variant) {
@@ -346,7 +345,9 @@ orders.post("/", async (req: Request, res: Response) => {
         .json({ error: "invalid_variant", message: "Invalid variantId." });
     }
     if (e?.code === "P2002") {
-      return res.status(400).json({ error: "conflict", message: "Duplicated." });
+      return res
+        .status(400)
+        .json({ error: "conflict", message: "Duplicated." });
     }
     console.error("[orders.create] unexpected error:", e);
     return res.status(500).json({ error: "internal_error" });
