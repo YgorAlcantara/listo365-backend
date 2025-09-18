@@ -2,6 +2,7 @@
 import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { prisma } from "../lib/prisma";
+import { resolveJwtSecret } from "../lib/jwtSecret";
 
 /** User object anexado ao request após autenticação */
 export type AuthedUser = {
@@ -45,7 +46,7 @@ export function requireAuth(
   const token = getTokenFromReq(req);
   if (!token) return res.status(401).json({ error: "Unauthorized" });
 
-  const secret = process.env.JWT_SECRET;
+  const secret = resolveJwtSecret();
   if (!secret) return res.status(500).json({ error: "JWT secret not set" });
 
   try {

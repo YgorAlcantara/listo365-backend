@@ -4,6 +4,7 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { requireAuth, AuthedRequest } from "../middleware/auth";
+import { resolveJwtSecret } from "../lib/jwtSecret";
 
 export const auth = Router();
 
@@ -25,9 +26,9 @@ auth.post("/login", async (req, res) => {
     const ok = await bcrypt.compare(body.password, user.password);
     if (!ok) return res.status(401).json({ error: "Invalid credentials" });
 
-    const secret = process.env.JWT_SECRET;
+    const secret = resolveJwtSecret();
     if (!secret) {
-      console.error("[auth/login] Missing JWT_SECRET env");
+      console.error("[auth/login] Missing JWT secret (set JWT_SECRET)");
       return res.status(500).json({ error: "JWT not configured" });
     }
 
@@ -39,10 +40,16 @@ auth.post("/login", async (req, res) => {
 
     return res.json({
       token,
-      user: { id: user.id, email: user.email, name: user.name, role: user.role },
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+      },
     });
   } catch (e: any) {
-    if (e?.name === "ZodError") return res.status(400).json({ error: "Invalid payload" });
+    if (e?.name === "ZodError")
+      return res.status(400).json({ error: "Invalid payload" });
     console.error("auth/login error:", e);
     return res.status(500).json({ error: "Login failed" });
   }
@@ -63,11 +70,16 @@ auth.get("/me", requireAuth, async (req: AuthedRequest, res) => {
 auth.post("/bootstrap-admin", async (req, res) => {
   try {
     const provided = String(req.body?.token || "");
-    if (!process.env.ADMIN_BOOTSTRAP_TOKEN || provided !== process.env.ADMIN_BOOTSTRAP_TOKEN) {
+    if (
+      !process.env.ADMIN_BOOTSTRAP_TOKEN ||
+      provided !== process.env.ADMIN_BOOTSTRAP_TOKEN
+    ) {
       return res.status(403).json({ error: "Forbidden" });
     }
 
-    const email = (process.env.ADMIN_EMAIL || "admin@listo365.com").toLowerCase();
+    const email = (
+      process.env.ADMIN_EMAIL || "admin@listo365.com"
+    ).toLowerCase();
     const name = process.env.ADMIN_NAME || "Admin";
     const pass = process.env.ADMIN_PASSWORD || "admin123";
 
@@ -78,9 +90,11 @@ auth.post("/bootstrap-admin", async (req, res) => {
       create: { email, name, password: hash, role: "ADMIN" },
     });
 
-    const secret = process.env.JWT_SECRET;
+    const secret = resolveJwtSecret();
     if (!secret) {
-      console.error("[auth/bootstrap-admin] Missing JWT_SECRET env");
+      console.error(
+        "[auth/bootstrap-admin] Missing JWT secret (set JWT_SECRET)"
+      );
       return res.status(500).json({ error: "JWT not configured" });
     }
 
