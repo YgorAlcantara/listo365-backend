@@ -4,7 +4,6 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { requireAuth, AuthedRequest } from "../middleware/auth";
-import { resolveJwtSecret } from "../lib/jwtSecret";
 
 export const auth = Router();
 
@@ -26,9 +25,9 @@ auth.post("/login", async (req, res) => {
     const ok = await bcrypt.compare(body.password, user.password);
     if (!ok) return res.status(401).json({ error: "Invalid credentials" });
 
-    const secret = resolveJwtSecret();
+    const secret = process.env.JWT_SECRET;
     if (!secret) {
-      console.error("[auth/login] Missing JWT secret (set JWT_SECRET)");
+      console.error("[auth/login] Missing JWT_SECRET env");
       return res.status(500).json({ error: "JWT not configured" });
     }
 
@@ -90,11 +89,9 @@ auth.post("/bootstrap-admin", async (req, res) => {
       create: { email, name, password: hash, role: "ADMIN" },
     });
 
-    const secret = resolveJwtSecret();
+    const secret = process.env.JWT_SECRET;
     if (!secret) {
-      console.error(
-        "[auth/bootstrap-admin] Missing JWT secret (set JWT_SECRET)"
-      );
+      console.error("[auth/bootstrap-admin] Missing JWT_SECRET env");
       return res.status(500).json({ error: "JWT not configured" });
     }
 

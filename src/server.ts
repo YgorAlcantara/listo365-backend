@@ -1,3 +1,4 @@
+// backend/src/server.ts
 import "dotenv/config";
 import express, { NextFunction } from "express";
 import cors from "cors";
@@ -14,47 +15,64 @@ import { customers } from "./routes/customers";
 
 const app = express();
 
-// Behind proxy/CDN
+// Atrás de proxy/CDN (Render/Fly/Cloudflare/etc.)
 app.set("trust proxy", 1);
 app.use(compression({ threshold: 512 }));
 
-// -------- CORS robusto --------
-const fromEnv = (process.env.FRONTEND_ORIGIN || "")
+// ============== CORS ==================
+// FRONTEND_ORIGIN pode ser uma lista separada por vírgula.
+// Ex.: "https://www.listo365cleaningsolutions.com,https://listo365cleaningsolutions.com,http://localhost:5173"
+const envOrigins = (process.env.FRONTEND_ORIGIN || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
-const allowList = new Set(fromEnv);
-const allowRegex = [
-  /^https?:\/\/(www\.)?listo365cleaningsolutions\.com$/,
-  /^https?:\/\/.*\.vercel\.app$/,
-  /^http:\/\/localhost:(\d{2,5})$/,
-];
-
-console.log("[CORS] allowList =", [...allowList]);
-console.log("[CORS] regex    =", allowRegex.map(String));
+// Regras extras úteis:
+// - permitir localhost em dev
+// - permitir previews do Vercel (*.vercel.app) se quiser (opcional)
+const allowVercelPreview = true;
+const vercelPreviewRegex = /\.vercel\.app$/i;
 
 const corsOptions: cors.CorsOptions = {
   origin(origin, cb) {
-    if (!origin) return cb(null, true); // curl/postman
-    if (allowList.has(origin)) return cb(null, true);
-    if (allowRegex.some((re) => re.test(origin))) return cb(null, true);
+    // Sem origin (ex.: curl/postman) -> libera
+    if (!origin) return cb(null, true);
+
+    // Se constar explicitamente na lista da ENV -> libera
+    if (envOrigins.includes(origin)) return cb(null, true);
+
+    // localhost (dev) -> libera
+    if (/^https?:\/\/localhost(:\d+)?$/i.test(origin)) return cb(null, true);
+
+    // Previews do Vercel (*.vercel.app) -> libera (opcional)
+    if (
+      allowVercelPreview &&
+      vercelPreviewRegex.test(new URL(origin).hostname)
+    ) {
+      return cb(null, true);
+    }
+
+    // Bloqueia o resto
     return cb(new Error(`Origin ${origin} not allowed by CORS`));
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  // Inclui Accept e X-Requested-With além dos básicos
   allowedHeaders: [
     "Content-Type",
     "Authorization",
     "X-Requested-With",
     "Accept",
   ],
+  // expõe cabeçalhos úteis para download de arquivos
   exposedHeaders: ["Content-Disposition"],
 };
 
 app.use(cors(corsOptions));
+// Preflight
 app.options("*", cors(corsOptions));
 
+// Body & cookies
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 
@@ -64,7 +82,7 @@ app.get("/", (_req, res) => {
   res.json({ ok: true, service: "listo365-backend" });
 });
 
-// Health
+// Health (DB ping only)
 app.get("/health", async (_req, res) => {
   res.set("Cache-Control", "no-store");
   try {
@@ -76,7 +94,7 @@ app.get("/health", async (_req, res) => {
   }
 });
 
-// Readiness (+seed opcional)
+// Readiness (opcional, com seed)
 app.get("/ready", async (req, res) => {
   try {
     const token = String(req.query.token || "");
@@ -122,7 +140,7 @@ app.use("/promotions", promotions);
 app.use("/categories", categories);
 app.use("/customers", customers);
 
-// Error handler global — garante resposta JSON + CORS mesmo em erros
+// Error handler global — garante resposta JSON mesmo em erros
 app.use(
   (
     err: any,
@@ -130,50 +148,11 @@ app.use(
     res: express.Response,
     _next: NextFunction
   ) => {
-    console.error("unhandled error:", {
-      name: err?.name,
-      code: err?.code,
-      message: err?.message,
-      meta: err?.meta,
-    });
+    console.error("unhandled error:", err);
     if (res.headersSent) return;
-    res.status(500).json({
-      error: "internal_error",
-      code: err?.code ?? null,
-      message: err?.message ?? null,
-    });
+    res.status(500).json({ error: "internal_error" });
   }
 );
-
-// Dev routes inspector
-if (process.env.NODE_ENV !== "production") {
-  // @ts-ignore
-  app.get("/_routes", (_req, res) => {
-    const list: any[] = [];
-    // @ts-ignore
-    app._router.stack.forEach((m: any) => {
-      if (m.route) {
-        list.push({
-          path: m.route.path,
-          methods: Object.keys(m.route.methods).filter(
-            (k) => m.route.methods[k]
-          ),
-        });
-      } else if (m.name === "router" && m.handle?.stack) {
-        m.handle.stack.forEach((h: any) => {
-          if (h.route)
-            list.push({
-              path: h.route.path,
-              methods: Object.keys(h.route.methods).filter(
-                (k) => h.route.methods[k]
-              ),
-            });
-        });
-      }
-    });
-    res.json(list);
-  });
-}
 
 // 404
 app.use((req, res) =>
@@ -184,6 +163,7 @@ app.use((req, res) =>
 const port = Number(process.env.PORT || 4000);
 app.listen(port, async () => {
   console.log(`API listening on :${port}`);
+  console.log("[CORS] FRONTEND_ORIGIN =", envOrigins.join(", ") || "(vazio)");
   try {
     await prisma.$connect();
   } catch (e) {
