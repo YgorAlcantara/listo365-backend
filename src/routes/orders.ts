@@ -48,13 +48,11 @@ async function applyStockDelta(
       data: { stock: { increment: delta } },
     });
     if (it.variantId) {
-      const pv = (tx as any).productVariant;
-      if (pv) {
-        await pv.update({
-          where: { id: it.variantId },
-          data: { stock: { increment: delta } },
-        });
-      }
+      // Ajuste conforme seu modelo Prisma (Variant vs ProductVariant)
+      await (tx as any).variant.update({
+        where: { id: it.variantId },
+        data: { stock: { increment: delta } },
+      });
     }
   }
 }
@@ -147,18 +145,18 @@ orders.get("/:id", requireAdmin, async (req: Request, res: Response) => {
 orders.post("/", async (req: Request, res: Response) => {
   const Body = z.object({
     customer: z.object({
-      name: z.string().min(2),
-      email: z.string().email(),
+      name: z.string().min(2, "Please enter at least 2 characters."),
+      email: z.string().email("Enter a valid email address."),
       phone: z.string().optional().nullable(),
       marketingOptIn: z.boolean().optional().default(false),
       company: z.string().optional().nullable(),
     }),
     address: z
       .object({
-        line1: z.string().min(2),
+        line1: z.string().min(2, "Please enter at least 2 characters."),
         line2: z.string().optional().nullable(),
         district: z.string().optional().nullable(),
-        city: z.string().min(1),
+        city: z.string().min(1, "City is required."),
         state: z.string().optional().nullable(),
         postalCode: z.string().optional().nullable(),
         country: z.string().optional().default("US"),
@@ -168,19 +166,18 @@ orders.post("/", async (req: Request, res: Response) => {
     items: z
       .array(
         z.object({
-          productId: z.string().min(1),
-          quantity: z.number().int().positive(),
+          productId: z.string().min(1, "Missing productId."),
+          quantity: z.number().int().positive("Quantity must be positive."),
           unitPrice: z.number().nonnegative().optional(),
           variantId: z.string().optional().nullable(),
           variantName: z.string().optional().nullable(),
         })
       )
-      .min(1),
-    note: z.string().max(1000).optional().nullable(),
+      .min(1, "Provide at least one item."),
+    note: z.string().max(1000, "Max 1000 characters.").optional().nullable(),
     recurrence: z.string().optional().nullable(),
   });
 
-  // ⚠️ não lançar erro do Zod: responder 400
   const parsed = Body.safeParse(req.body);
   if (!parsed.success) {
     return res
@@ -189,146 +186,171 @@ orders.post("/", async (req: Request, res: Response) => {
   }
   const body = parsed.data;
 
-  // Hidrata preços ausentes via variant.price quando existir
-  const hydratedItems = await Promise.all(
-    body.items.map(async (it) => {
-      if (!it.variantId) {
+  try {
+    // hydrate unitPrice if variantId is provided
+    const hydratedItems = await Promise.all(
+      body.items.map(async (it) => {
+        if (!it.variantId) {
+          return {
+            ...it,
+            unitPrice: typeof it.unitPrice === "number" ? it.unitPrice : 0,
+          };
+        }
+        // ✅ Ajuste para seu modelo Prisma (provável "variant")
+        const variant = await (prisma as any).variant.findUnique({
+          where: { id: it.variantId },
+        });
+        if (!variant) {
+          // evita P2003 explicando a causa
+          throw Object.assign(new Error("Variant not found."), {
+            code: "VARIANT_NOT_FOUND",
+          });
+        }
+        const fallbackPrice = Number(variant?.price ?? 0);
+        const variantName = it.variantName ?? variant?.name ?? null;
         return {
           ...it,
-          unitPrice: typeof it.unitPrice === "number" ? it.unitPrice : 0,
+          unitPrice:
+            typeof it.unitPrice === "number" ? it.unitPrice : fallbackPrice,
+          variantName,
         };
-      }
-      const variant = await (prisma as any).productVariant?.findUnique({
-        where: { id: it.variantId },
+      })
+    );
+
+    const totals = calcTotals(hydratedItems);
+
+    const created = await prisma.$transaction(async (tx) => {
+      const customer = await tx.customer.upsert({
+        where: { email: body.customer.email },
+        update: {
+          name: body.customer.name,
+          phone: body.customer.phone ?? undefined,
+          company: body.customer.company ?? undefined,
+          marketingOptIn: body.customer.marketingOptIn ?? false,
+        },
+        create: {
+          email: body.customer.email,
+          name: body.customer.name,
+          phone: body.customer.phone ?? undefined,
+          company: body.customer.company ?? undefined,
+          marketingOptIn: body.customer.marketingOptIn ?? false,
+        },
       });
-      const fallbackPrice = Number(variant?.price ?? 0);
-      const variantName = it.variantName ?? variant?.name ?? null;
-      return {
-        ...it,
-        unitPrice:
-          typeof it.unitPrice === "number" ? it.unitPrice : fallbackPrice,
-        variantName,
-      };
-    })
-  );
 
-  const totals = calcTotals(hydratedItems);
+      let addressId: string | null = null;
+      if (body.address) {
+        const addr = await tx.address.create({
+          data: {
+            customerId: customer.id,
+            line1: body.address.line1,
+            line2: body.address.line2 ?? undefined,
+            district: body.address.district ?? undefined,
+            city: body.address.city,
+            state: body.address.state ?? undefined,
+            postalCode: body.address.postalCode ?? undefined,
+            country: body.address.country ?? "US",
+          },
+          select: { id: true },
+        });
+        addressId = addr.id;
+      }
 
-  const created = await prisma.$transaction(async (tx) => {
-    const customer = await tx.customer.upsert({
-      where: { email: body.customer.email },
-      update: {
-        name: body.customer.name,
-        phone: body.customer.phone ?? undefined,
-        company: body.customer.company ?? undefined,
-        marketingOptIn: body.customer.marketingOptIn ?? false,
-      },
-      create: {
-        email: body.customer.email,
-        name: body.customer.name,
-        phone: body.customer.phone ?? undefined,
-        company: body.customer.company ?? undefined,
-        marketingOptIn: body.customer.marketingOptIn ?? false,
-      },
-    });
-
-    let addressId: string | null = null;
-    if (body.address) {
-      const addr = await tx.address.create({
+      const order = await tx.orderInquiry.create({
         data: {
           customerId: customer.id,
-          line1: body.address.line1,
-          line2: body.address.line2 ?? undefined,
-          district: body.address.district ?? undefined,
-          city: body.address.city,
-          state: body.address.state ?? undefined,
-          postalCode: body.address.postalCode ?? undefined,
-          country: body.address.country ?? "US",
-        },
-        select: { id: true },
-      });
-      addressId = addr.id;
-    }
-
-    const order = await tx.orderInquiry.create({
-      data: {
-        customerId: customer.id,
-        addressId,
-        status: "RECEIVED",
-        note: body.note ?? null,
-        adminNote: null,
-        recurrence: body.recurrence ?? null,
-        customerName: customer.name,
-        customerEmail: customer.email,
-        customerPhone: customer.phone ?? null,
-        subtotal: totals.subtotal,
-        total: totals.total,
-        currency: "USD",
-        items: {
-          create: hydratedItems.map((it) => ({
-            productId: it.productId,
-            quantity: it.quantity,
-            unitPrice: it.unitPrice ?? 0,
-            variantId: it.variantId ?? null,
-            variantName: it.variantName ?? null,
-          })),
-        },
-      },
-      include: {
-        customer: true,
-        address: true,
-        items: {
-          include: {
-            product: { select: { name: true } },
-            variant: { select: { name: true, sku: true } },
+          addressId,
+          status: "RECEIVED",
+          note: body.note ?? null,
+          adminNote: null,
+          recurrence: body.recurrence ?? null,
+          customerName: customer.name,
+          customerEmail: customer.email,
+          customerPhone: customer.phone ?? null,
+          subtotal: totals.subtotal,
+          total: totals.total,
+          currency: "USD",
+          items: {
+            create: hydratedItems.map((it) => ({
+              productId: it.productId,
+              quantity: it.quantity,
+              unitPrice: it.unitPrice ?? 0,
+              variantId: it.variantId ?? null,
+              variantName: it.variantName ?? null,
+            })),
           },
         },
-      },
+        include: {
+          customer: true,
+          address: true,
+          items: {
+            include: {
+              product: { select: { name: true } },
+              variant: { select: { name: true, sku: true } },
+            },
+          },
+        },
+      });
+
+      return order;
     });
 
-    return order;
-  });
+    // email (best-effort)
+    try {
+      await sendNewOrderEmails({
+        id: created.id,
+        createdAt: created.createdAt.toISOString(),
+        status: created.status,
+        subtotal: Number(created.subtotal),
+        total: Number(created.total),
+        customer: {
+          name: created.customer?.name || "",
+          email: created.customer?.email || "",
+          phone: created.customer?.phone || null,
+          company: created.customer?.company || null,
+          marketingOptIn: !!created.customer?.marketingOptIn,
+        },
+        address: created.address
+          ? {
+              line1: created.address.line1,
+              line2: created.address.line2,
+              district: created.address.district,
+              city: created.address.city,
+              state: created.address.state,
+              postalCode: created.address.postalCode,
+              country: created.address.country,
+            }
+          : null,
+        note: created.note || null,
+        items: created.items.map((it) => ({
+          productId: it.productId,
+          productName: it.product?.name || null,
+          variantName: it.variant?.name || null,
+          quantity: it.quantity,
+          unitPrice: Number(it.unitPrice),
+        })),
+      });
+    } catch (e: any) {
+      console.warn("[orders] email send failed:", e?.message || e);
+    }
 
-  // E-mail (não quebra fluxo se falhar)
-  try {
-    await sendNewOrderEmails({
-      id: created.id,
-      createdAt: created.createdAt.toISOString(),
-      status: created.status,
-      subtotal: Number(created.subtotal),
-      total: Number(created.total),
-      customer: {
-        name: created.customer?.name || "",
-        email: created.customer?.email || "",
-        phone: created.customer?.phone || null,
-        company: created.customer?.company || null,
-        marketingOptIn: !!created.customer?.marketingOptIn,
-      },
-      address: created.address
-        ? {
-            line1: created.address.line1,
-            line2: created.address.line2,
-            district: created.address.district,
-            city: created.address.city,
-            state: created.address.state,
-            postalCode: created.address.postalCode,
-            country: created.address.country,
-          }
-        : null,
-      note: created.note || null,
-      items: created.items.map((it) => ({
-        productId: it.productId,
-        productName: it.product?.name || null,
-        variantName: it.variant?.name || null,
-        quantity: it.quantity,
-        unitPrice: Number(it.unitPrice),
-      })),
-    });
-  } catch (e) {
-    console.warn("[orders] email send failed:", (e as Error).message);
+    return res.status(201).json(created);
+  } catch (e: any) {
+    // Map Prisma known errors and our custom guard
+    if (e?.code === "VARIANT_NOT_FOUND") {
+      return res.status(400).json({ error: "variant_not_found" });
+    }
+    if (e?.code === "P2003") {
+      // FK error
+      return res
+        .status(400)
+        .json({ error: "invalid_variant", message: "Invalid variantId." });
+    }
+    if (e?.code === "P2002") {
+      return res.status(400).json({ error: "conflict", message: "Duplicated." });
+    }
+    console.error("[orders.create] unexpected error:", e);
+    return res.status(500).json({ error: "internal_error" });
   }
-
-  res.status(201).json(created);
 });
 
 // =============== CHANGE STATUS (ADMIN) ===============
