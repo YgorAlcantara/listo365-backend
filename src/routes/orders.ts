@@ -1,4 +1,3 @@
-// backend/src/routes/orders.ts
 import { Router, Request, Response } from "express";
 import { prisma } from "../lib/prisma";
 import { requireAdmin } from "../middleware/auth";
@@ -40,7 +39,6 @@ type VariantDelegate = {
 
 function resolveVariantDelegate(client: unknown): VariantDelegate | null {
   const anyClient = client as any;
-  // suporta clientes com .productVariant (mais comum) ou .variant
   const delegate = anyClient?.productVariant ?? anyClient?.variant ?? null;
   if (!delegate) return null;
   return delegate as VariantDelegate;
@@ -186,7 +184,6 @@ orders.post("/", async (req: Request, res: Response) => {
           quantity: z.number().int().positive("Quantity must be positive."),
           unitPrice: z.number().nonnegative().optional(),
           variantId: z.string().optional().nullable(),
-          // front pode mandar variantName; a API ignora no create (não há coluna garantida)
           variantName: z.string().optional().nullable(),
         })
       )
@@ -206,16 +203,13 @@ orders.post("/", async (req: Request, res: Response) => {
   try {
     const variantDelegate = resolveVariantDelegate(prisma);
 
-    // hidrata unitPrice com base no variant (ou product) quando não vier do front
     const hydratedItems = await Promise.all(
       body.items.map(async (it) => {
-        // 1) tentar via variant
         if (it.variantId && variantDelegate?.findUnique) {
           const variant = await variantDelegate.findUnique({
             where: { id: it.variantId },
           });
           if (!variant) {
-            // evita P2003 com mensagem clara
             const err: any = new Error("Variant not found.");
             err.code = "VARIANT_NOT_FOUND";
             throw err;
@@ -230,7 +224,6 @@ orders.post("/", async (req: Request, res: Response) => {
           };
         }
 
-        // 2) fallback: tentar preço do produto
         const product = await prisma.product.findUnique({
           where: { id: it.productId },
           select: { price: true },
@@ -298,15 +291,14 @@ orders.post("/", async (req: Request, res: Response) => {
           currency: "USD",
           items: {
             create: hydratedItems.map((it) => {
-              // base sempre válido
               const base: any = {
                 productId: it.productId,
                 quantity: it.quantity,
                 unitPrice: it.unitPrice ?? 0,
               };
-              // se existir relação "variant" em OrderItem, conecte assim:
+              // ✅ agora usa variantId direto
               if (it.variantId) {
-                base.variant = { connect: { id: it.variantId } };
+                base.variantId = it.variantId;
               }
               return base;
             }),
@@ -327,7 +319,6 @@ orders.post("/", async (req: Request, res: Response) => {
       return order;
     });
 
-    // email (best-effort)
     try {
       await sendNewOrderEmails({
         id: created.id,
@@ -368,12 +359,10 @@ orders.post("/", async (req: Request, res: Response) => {
 
     return res.status(201).json(created);
   } catch (e: any) {
-    // Mapeia erros conhecidos do Prisma e os nossos
     if (e?.code === "VARIANT_NOT_FOUND") {
       return res.status(400).json({ error: "variant_not_found" });
     }
     if (e?.code === "P2003") {
-      // FK error: productId/variant inválidos
       return res
         .status(400)
         .json({ error: "invalid_fk", message: "Invalid product/variant id." });
@@ -392,197 +381,3 @@ orders.post("/", async (req: Request, res: Response) => {
     return res.status(500).json({ error: "internal_error" });
   }
 });
-
-// =============== CHANGE STATUS (ADMIN) ===============
-orders.patch(
-  "/:id/status",
-  requireAdmin,
-  async (req: Request, res: Response) => {
-    const Body = z.object({
-      status: z.enum(STATUS_VALUES as [OrderStatus, ...OrderStatus[]]),
-    });
-    const { status: next } = Body.parse(req.body);
-    const id = req.params.id;
-
-    const updated = await prisma.$transaction(async (tx) => {
-      const current = await tx.orderInquiry.findUnique({
-        where: { id },
-        include: { items: true },
-      });
-      if (!current) throw new Error("not_found");
-
-      const prev = current.status as OrderStatus;
-
-      if (prev !== "COMPLETED" && next === "COMPLETED") {
-        await applyStockDelta(
-          tx,
-          current.items.map((i) => ({
-            productId: i.productId,
-            quantity: i.quantity,
-            variantId: (i as any).variantId ?? null,
-          })),
-          "dec"
-        );
-      } else if (prev === "COMPLETED" && next !== "COMPLETED") {
-        await applyStockDelta(
-          tx,
-          current.items.map((i) => ({
-            productId: i.productId,
-            quantity: i.quantity,
-            variantId: (i as any).variantId ?? null,
-          })),
-          "inc"
-        );
-      }
-
-      return tx.orderInquiry.update({ where: { id }, data: { status: next } });
-    });
-
-    res.json({ ok: true, status: updated.status });
-  }
-);
-
-// =============== NOTES (ADMIN) ===============
-orders.patch("/:id/note", requireAdmin, async (req: Request, res: Response) => {
-  const Body = z.object({
-    note: z.string().max(2000).optional().nullable(),
-    adminNote: z.string().max(4000).optional().nullable(),
-  });
-  const { note, adminNote } = Body.parse(req.body);
-  const id = req.params.id;
-
-  await prisma.orderInquiry.update({
-    where: { id },
-    data: { note: note ?? null, adminNote: adminNote ?? null },
-  });
-  res.json({ ok: true });
-});
-
-// =============== EXPORT CSV (ADMIN) ===============
-orders.get(
-  "/export/csv",
-  requireAdmin,
-  async (_req: Request, res: Response) => {
-    const list = await prisma.orderInquiry.findMany({
-      orderBy: { createdAt: "desc" },
-      include: {
-        customer: true,
-        address: true,
-        items: {
-          include: {
-            product: { select: { name: true } },
-            variant: { select: { name: true, sku: true } },
-          },
-        },
-      },
-    });
-
-    const header = [
-      "order_id",
-      "created_at",
-      "status",
-      "customer_name",
-      "customer_email",
-      "customer_phone",
-      "company",
-      "addr_line1",
-      "addr_line2",
-      "district",
-      "city",
-      "state",
-      "postal_code",
-      "country",
-      "note",
-      "recurrence",
-      "subtotal",
-      "total",
-      "currency",
-      "item_product",
-      "item_variant",
-      "item_sku",
-      "item_qty",
-      "item_unit",
-      "item_line_total",
-    ];
-
-    const rows: string[] = [header.join(",")];
-
-    for (const o of list) {
-      if (o.items.length === 0) {
-        rows.push(
-          [
-            o.id,
-            o.createdAt.toISOString(),
-            o.status,
-            o.customer?.name || "",
-            o.customer?.email || "",
-            o.customer?.phone || "",
-            o.customer?.company || "",
-            o.address?.line1 || "",
-            o.address?.line2 || "",
-            o.address?.district || "",
-            o.address?.city || "",
-            o.address?.state || "",
-            o.address?.postalCode || "",
-            o.address?.country || "",
-            o.note || "",
-            o.recurrence || "",
-            asNum(o.subtotal).toFixed(2),
-            asNum(o.total).toFixed(2),
-            o.currency || "USD",
-            "",
-            "",
-            "",
-            "0",
-            "0.00",
-            "0.00",
-          ]
-            .map(csvEscape)
-            .join(",")
-        );
-        continue;
-      }
-
-      for (const it of o.items) {
-        const unit = asNum(it.unitPrice);
-        const line = unit * it.quantity;
-        rows.push(
-          [
-            o.id,
-            o.createdAt.toISOString(),
-            o.status,
-            o.customer?.name || "",
-            o.customer?.email || "",
-            o.customer?.phone || "",
-            o.customer?.company || "",
-            o.address?.line1 || "",
-            o.address?.line2 || "",
-            o.address?.district || "",
-            o.address?.city || "",
-            o.address?.state || "",
-            o.address?.postalCode || "",
-            o.address?.country || "",
-            o.note || "",
-            o.recurrence || "",
-            asNum(o.subtotal).toFixed(2),
-            asNum(o.total).toFixed(2),
-            o.currency || "USD",
-            it.product?.name || "",
-            it.variant?.name || "",
-            it.variant?.sku || "",
-            String(it.quantity),
-            unit.toFixed(2),
-            line.toFixed(2),
-          ]
-            .map(csvEscape)
-            .join(",")
-        );
-      }
-    }
-
-    const csv = rows.join("\n");
-    res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader("Content-Disposition", 'attachment; filename="orders.csv"');
-    res.status(200).send("\uFEFF" + csv);
-  }
-);
