@@ -401,3 +401,73 @@ orders.patch("/:id/status", requireAdmin, async (req: Request, res: Response) =>
     return res.status(500).json({ error: "failed_to_update_status" });
   }
 });
+
+// =============== UPDATE NOTES ===============
+orders.patch("/:id/note", requireAdmin, async (req: Request, res: Response) => {
+  const id = req.params.id;
+  const { note, adminNote } = req.body as {
+    note?: string | null;
+    adminNote?: string | null;
+  };
+
+  try {
+    const updated = await prisma.orderInquiry.update({
+      where: { id },
+      data: { note: note ?? null, adminNote: adminNote ?? null },
+    });
+    return res.json(updated);
+  } catch (e: any) {
+    console.error("[orders.updateNote] failed:", e);
+    return res.status(500).json({ error: "failed_to_update_notes" });
+  }
+});
+
+// =============== EXPORT CSV ===============
+orders.get("/export/csv", requireAdmin, async (_req: Request, res: Response) => {
+  try {
+    const orders = await prisma.orderInquiry.findMany({
+      orderBy: { createdAt: "desc" },
+    });
+
+    const header = [
+      "id",
+      "createdAt",
+      "status",
+      "customerName",
+      "customerEmail",
+      "customerPhone",
+      "subtotal",
+      "total",
+      "currency",
+      "note",
+      "adminNote",
+    ].join(",");
+
+    const rows = orders.map((o) =>
+      [
+        o.id,
+        o.createdAt.toISOString(),
+        o.status,
+        o.customerName,
+        o.customerEmail,
+        o.customerPhone ?? "",
+        o.subtotal.toString(),
+        o.total.toString(),
+        o.currency,
+        o.note ?? "",
+        o.adminNote ?? "",
+      ]
+        .map(csvEscape)
+        .join(",")
+    );
+
+    const csv = [header, ...rows].join("\n");
+
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", "attachment; filename=orders.csv");
+    res.send(csv);
+  } catch (e: any) {
+    console.error("[orders.exportCSV] failed:", e);
+    return res.status(500).json({ error: "failed_to_export_csv" });
+  }
+});
