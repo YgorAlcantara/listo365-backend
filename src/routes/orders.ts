@@ -296,7 +296,6 @@ orders.post("/", async (req: Request, res: Response) => {
                 quantity: it.quantity,
                 unitPrice: it.unitPrice ?? 0,
               };
-              // ✅ agora usa variantId direto
               if (it.variantId) {
                 base.variantId = it.variantId;
               }
@@ -379,5 +378,26 @@ orders.post("/", async (req: Request, res: Response) => {
       meta: e?.meta,
     });
     return res.status(500).json({ error: "internal_error" });
+  }
+});
+
+// =============== UPDATE STATUS ===============
+orders.patch("/:id/status", requireAdmin, async (req: Request, res: Response) => {
+  const id = req.params.id;
+  const { status } = req.body as { status: OrderStatus };
+
+  if (!STATUS_VALUES.includes(status)) {
+    return res.status(400).json({ error: "invalid_status" });
+  }
+
+  try {
+    const updated = await prisma.orderInquiry.update({
+      where: { id },
+      data: { status },
+    });
+    return res.json(updated);
+  } catch (e: any) {
+    console.error("[orders.updateStatus] failed:", e);
+    return res.status(500).json({ error: "failed_to_update_status" });
   }
 });
