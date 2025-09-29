@@ -157,33 +157,227 @@ orders.get("/:id", requireAdmin, async (req: Request, res: Response) => {
 
 // =============== CREATE (public) ===============
 orders.post("/", async (req: Request, res: Response) => {
-  // ... (sua lógica de criação já existente, mantida igual)
-});
+  const Body = z.object({
+    customer: z.object({
+      name: z.string().min(2, "Please enter at least 2 characters."),
+      email: z.string().email("Enter a valid email address."),
+      phone: z.string().optional().nullable(),
+      marketingOptIn: z.boolean().optional().default(false),
+      company: z.string().optional().nullable(),
+    }),
+    address: z
+      .object({
+        line1: z.string().min(2, "Please enter at least 2 characters."),
+        line2: z.string().optional().nullable(),
+        district: z.string().optional().nullable(),
+        city: z.string().min(1, "City is required."),
+        state: z.string().optional().nullable(),
+        postalCode: z.string().optional().nullable(),
+        country: z.string().optional().default("US"),
+      })
+      .optional()
+      .nullable(),
+    items: z
+      .array(
+        z.object({
+          productId: z.string().min(1, "Missing productId."),
+          quantity: z.number().int().positive("Quantity must be positive."),
+          unitPrice: z.number().nonnegative().optional(),
+          variantId: z.string().optional().nullable(),
+          variantName: z.string().optional().nullable(),
+        })
+      )
+      .min(1, "Provide at least one item."),
+    note: z.string().max(1000, "Max 1000 characters.").optional().nullable(),
+    recurrence: z.string().optional().nullable(),
+  });
 
-// =============== ARCHIVE (soft delete) ===============
-orders.patch("/:id/archive", requireAdmin, async (req: Request, res: Response) => {
-  const id = req.params.id;
-  try {
-    const updated = await prisma.orderInquiry.update({
-      where: { id },
-      data: { status: "CANCELLED" }, // ou "ARCHIVED"
-    });
-    return res.json({ ok: true, archived: true, order: updated });
-  } catch (e: any) {
-    console.error("[orders.archive] failed:", e);
-    return res.status(500).json({ error: "failed_to_archive" });
+  const parsed = Body.safeParse(req.body);
+  if (!parsed.success) {
+    return res
+      .status(400)
+      .json({ error: "invalid_body", issues: parsed.error.issues });
   }
-});
+  const body = parsed.data;
 
-// =============== DELETE (hard delete) ===============
-orders.delete("/:id/hard", requireAdmin, async (req: Request, res: Response) => {
-  const id = req.params.id;
   try {
-    await prisma.orderItem.deleteMany({ where: { orderId: id } });
-    await prisma.orderInquiry.delete({ where: { id } });
-    return res.json({ ok: true, deleted: true });
+    const variantDelegate = resolveVariantDelegate(prisma);
+
+    const hydratedItems = await Promise.all(
+      body.items.map(async (it) => {
+        if (it.variantId && variantDelegate?.findUnique) {
+          const variant = await variantDelegate.findUnique({
+            where: { id: it.variantId },
+          });
+          if (!variant) {
+            const err: any = new Error("Variant not found.");
+            err.code = "VARIANT_NOT_FOUND";
+            throw err;
+          }
+          const priceFromVariant = Number(variant?.price ?? 0);
+          return {
+            ...it,
+            unitPrice:
+              typeof it.unitPrice === "number"
+                ? it.unitPrice
+                : priceFromVariant,
+          };
+        }
+
+        const product = await prisma.product.findUnique({
+          where: { id: it.productId },
+          select: { price: true },
+        });
+        const priceFromProduct = Number(product?.price ?? 0);
+        return {
+          ...it,
+          unitPrice:
+            typeof it.unitPrice === "number" ? it.unitPrice : priceFromProduct,
+        };
+      })
+    );
+
+    const totals = calcTotals(hydratedItems);
+
+    const created = await prisma.$transaction(async (tx) => {
+      const customer = await tx.customer.upsert({
+        where: { email: body.customer.email.toLowerCase() },
+        update: {
+          name: body.customer.name,
+          phone: body.customer.phone ?? undefined,
+          company: body.customer.company ?? undefined,
+          marketingOptIn: body.customer.marketingOptIn ?? false,
+        },
+        create: {
+          email: body.customer.email.toLowerCase(),
+          name: body.customer.name,
+          phone: body.customer.phone ?? undefined,
+          company: body.customer.company ?? undefined,
+          marketingOptIn: body.customer.marketingOptIn ?? false,
+        },
+      });
+
+      let addressId: string | null = null;
+      if (body.address) {
+        const addr = await tx.address.create({
+          data: {
+            customerId: customer.id,
+            line1: body.address.line1,
+            line2: body.address.line2 ?? undefined,
+            district: body.address.district ?? undefined,
+            city: body.address.city,
+            state: body.address.state ?? undefined,
+            postalCode: body.address.postalCode ?? undefined,
+            country: body.address.country ?? "US",
+          },
+          select: { id: true },
+        });
+        addressId = addr.id;
+      }
+
+      const order = await tx.orderInquiry.create({
+        data: {
+          customerId: customer.id,
+          addressId,
+          status: "RECEIVED",
+          note: body.note ?? null,
+          adminNote: null,
+          recurrence: body.recurrence ?? null,
+          customerName: customer.name,
+          customerEmail: customer.email,
+          customerPhone: customer.phone ?? null,
+          subtotal: totals.subtotal,
+          total: totals.total,
+          currency: "USD",
+          items: {
+            create: hydratedItems.map((it) => {
+              const base: any = {
+                productId: it.productId,
+                quantity: it.quantity,
+                unitPrice: it.unitPrice ?? 0,
+              };
+              // ✅ agora usa variantId direto
+              if (it.variantId) {
+                base.variantId = it.variantId;
+              }
+              return base;
+            }),
+          },
+        },
+        include: {
+          customer: true,
+          address: true,
+          items: {
+            include: {
+              product: { select: { name: true } },
+              variant: { select: { name: true, sku: true } },
+            },
+          },
+        },
+      });
+
+      return order;
+    });
+
+    try {
+      await sendNewOrderEmails({
+        id: created.id,
+        createdAt: created.createdAt.toISOString(),
+        status: created.status,
+        subtotal: Number(created.subtotal),
+        total: Number(created.total),
+        customer: {
+          name: created.customer?.name || "",
+          email: created.customer?.email || "",
+          phone: created.customer?.phone || null,
+          company: created.customer?.company || null,
+          marketingOptIn: !!created.customer?.marketingOptIn,
+        },
+        address: created.address
+          ? {
+              line1: created.address.line1,
+              line2: created.address.line2,
+              district: created.address.district,
+              city: created.address.city,
+              state: created.address.state,
+              postalCode: created.address.postalCode,
+              country: created.address.country,
+            }
+          : null,
+        note: created.note || null,
+        items: created.items.map((it) => ({
+          productId: it.productId,
+          productName: it.product?.name || null,
+          variantName: it.variant?.name || null,
+          quantity: it.quantity,
+          unitPrice: Number(it.unitPrice),
+        })),
+      });
+    } catch (e: any) {
+      console.warn("[orders] email send failed:", e?.message || e);
+    }
+
+    return res.status(201).json(created);
   } catch (e: any) {
-    console.error("[orders.hardDelete] failed:", e);
-    return res.status(500).json({ error: "failed_to_delete" });
+    if (e?.code === "VARIANT_NOT_FOUND") {
+      return res.status(400).json({ error: "variant_not_found" });
+    }
+    if (e?.code === "P2003") {
+      return res
+        .status(400)
+        .json({ error: "invalid_fk", message: "Invalid product/variant id." });
+    }
+    if (e?.code === "P2002") {
+      return res
+        .status(400)
+        .json({ error: "conflict", message: "Duplicated." });
+    }
+    console.error("[orders.create] unexpected error:", {
+      name: e?.name,
+      code: e?.code,
+      message: e?.message,
+      meta: e?.meta,
+    });
+    return res.status(500).json({ error: "internal_error" });
   }
 });
