@@ -19,89 +19,95 @@ const app = express();
 app.set("trust proxy", 1);
 app.use(compression({ threshold: 512 }));
 
-// ============== CORS ==================
-// FRONTEND_ORIGIN pode ser uma lista separada por vírgula.
-// Ex.: "https://www.listo365cleaningsolutions.com,https://listo365cleaningsolutions.com,http://localhost:5173"
+/**
+ * ==============================
+ * CORS CONFIG
+ * ==============================
+ */
 const envOrigins = (process.env.FRONTEND_ORIGIN || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
-// Regras extras úteis:
-// - permitir localhost em dev
-// - permitir previews do Vercel (*.vercel.app) se quiser (opcional)
 const allowVercelPreview = true;
 const vercelPreviewRegex = /\.vercel\.app$/i;
 
 const corsOptions: cors.CorsOptions = {
   origin(origin, cb) {
-    // Sem origin (ex.: curl/postman) -> libera
-    if (!origin) return cb(null, true);
-
-    // Se constar explicitamente na lista da ENV -> libera
+    if (!origin) return cb(null, true); // curl/postman
     if (envOrigins.includes(origin)) return cb(null, true);
-
-    // localhost (dev) -> libera
     if (/^https?:\/\/localhost(:\d+)?$/i.test(origin)) return cb(null, true);
-
-    // Previews do Vercel (*.vercel.app) -> libera (opcional)
     if (
       allowVercelPreview &&
       vercelPreviewRegex.test(new URL(origin).hostname)
-    ) {
+    )
       return cb(null, true);
-    }
-
-    // Bloqueia o resto
     return cb(new Error(`Origin ${origin} not allowed by CORS`));
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  // Inclui Accept e X-Requested-With além dos básicos
   allowedHeaders: [
     "Content-Type",
     "Authorization",
     "X-Requested-With",
     "Accept",
   ],
-  // expõe cabeçalhos úteis para download de arquivos
   exposedHeaders: ["Content-Disposition"],
 };
 
 app.use(cors(corsOptions));
-// Preflight
 app.options("*", cors(corsOptions));
 
 // Body & cookies
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 
-// Root
+/**
+ * ==============================
+ * ROOT
+ * ==============================
+ */
 app.get("/", (_req, res) => {
   res.set("Cache-Control", "no-store");
   res.json({ ok: true, service: "listo365-backend" });
 });
 
-// Health (DB ping only)
+/**
+ * ==============================
+ * HEALTH CHECK (com reconexão automática)
+ * ==============================
+ */
 app.get("/health", async (_req, res) => {
   res.set("Cache-Control", "no-store");
   try {
     await prisma.$queryRaw`SELECT 1`;
     return res.json({ ok: true, db: true });
   } catch (e) {
-    console.error("health db error", e);
-    return res.status(500).json({ ok: false, db: false });
+    console.error("⚠️ health db error", e);
+    try {
+      await prisma.$disconnect();
+      await prisma.$connect();
+      console.log("🔁 Prisma reconnected during health check");
+      return res.json({ ok: true, db: true, reconnected: true });
+    } catch {
+      return res.status(500).json({ ok: false, db: false });
+    }
   }
 });
 
-// Readiness (opcional, com seed)
+/**
+ * ==============================
+ * READINESS (com seed opcional)
+ * ==============================
+ */
 app.get("/ready", async (req, res) => {
   try {
     const token = String(req.query.token || "");
     if (process.env.READY_TOKEN && token !== process.env.READY_TOKEN) {
       return res.status(401).json({ error: "unauthorized" });
     }
-    await prisma.$queryRaw`SELECT 1`;
+
+    await prisma.$queryRawUnsafe("SELECT 1");
 
     let seeded = false;
     const shouldSeed =
@@ -115,10 +121,10 @@ app.get("/ready", async (req, res) => {
           await fn();
           seeded = true;
         } else {
-          console.warn("Seed module loaded but no run function was found");
+          console.warn("⚠️ Seed module loaded but no run function found");
         }
       } catch (e) {
-        console.error("seed failed in /ready:", e);
+        console.error("❌ seed failed in /ready:", e);
         return res
           .status(500)
           .json({ ok: false, db: true, seeded: false, error: "seed_failed" });
@@ -132,7 +138,11 @@ app.get("/ready", async (req, res) => {
   }
 });
 
-// Routers
+/**
+ * ==============================
+ * ROUTERS
+ * ==============================
+ */
 app.use("/auth", auth);
 app.use("/products", products);
 app.use("/orders", orders);
@@ -140,7 +150,11 @@ app.use("/promotions", promotions);
 app.use("/categories", categories);
 app.use("/customers", customers);
 
-// Error handler global — garante resposta JSON mesmo em erros
+/**
+ * ==============================
+ * ERROR HANDLER GLOBAL
+ * ==============================
+ */
 app.use(
   (
     err: any,
@@ -159,19 +173,28 @@ app.use((req, res) =>
   res.status(404).json({ error: "not_found", path: req.path })
 );
 
-// Start
+/**
+ * ==============================
+ * START SERVER
+ * ==============================
+ */
 const port = Number(process.env.PORT || 4000);
 app.listen(port, async () => {
-  console.log(`API listening on :${port}`);
+  console.log(`🚀 API listening on :${port}`);
   console.log("[CORS] FRONTEND_ORIGIN =", envOrigins.join(", ") || "(vazio)");
   try {
     await prisma.$connect();
+    console.log("✅ Prisma connected successfully");
   } catch (e) {
-    console.error("prisma connect failed on boot:", e);
+    console.error("❌ prisma connect failed on boot:", e);
   }
 });
 
-// Graceful shutdown
+/**
+ * ==============================
+ * GRACEFUL SHUTDOWN
+ * ==============================
+ */
 process.on("SIGINT", async () => {
   try {
     await prisma.$disconnect();
@@ -186,3 +209,26 @@ process.on("SIGTERM", async () => {
     process.exit(0);
   }
 });
+
+/**
+ * ==============================
+ * KEEP-ALIVE (evita hibernação Supabase Free)
+ * ==============================
+ */
+if (process.env.NODE_ENV === "production") {
+  setInterval(async () => {
+    try {
+      await prisma.$queryRawUnsafe("SELECT 1");
+      console.log("🩺 DB keep-alive ping ok");
+    } catch (e) {
+      console.warn("⚠️ DB ping failed, reconnecting...");
+      try {
+        await prisma.$disconnect();
+        await prisma.$connect();
+        console.log("✅ Prisma reconnected (keep-alive)");
+      } catch (err) {
+        console.error("❌ Reconnect failed:", err);
+      }
+    }
+  }, 240000); // a cada 4 minutos
+}
