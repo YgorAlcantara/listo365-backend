@@ -15,7 +15,7 @@ import { customers } from "./routes/customers";
 
 const app = express();
 
-// Atrás de proxy/CDN (Render/Fly/Cloudflare/etc.)
+// Proxy/CDN (Render, Fly.io, Cloudflare etc.)
 app.set("trust proxy", 1);
 app.use(compression({ threshold: 512 }));
 
@@ -80,7 +80,7 @@ app.get("/", (_req, res) => {
 app.get("/health", async (_req, res) => {
   res.set("Cache-Control", "no-store");
   try {
-    await prisma.$queryRaw`SELECT 1`;
+    await prisma.$queryRawUnsafe("SELECT 1");
     return res.json({ ok: true, db: true });
   } catch (e) {
     console.error("⚠️ health db error", e);
@@ -175,6 +175,25 @@ app.use((req, res) =>
 
 /**
  * ==============================
+ * FUNÇÃO DE RECONEXÃO AUTOMÁTICA
+ * ==============================
+ */
+async function connectWithRetry(retries = 10, delay = 5000) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      await prisma.$connect();
+      console.log("✅ Prisma connected successfully");
+      return;
+    } catch (err) {
+      console.warn(`⚠️ Prisma connect attempt ${i + 1}/${retries} failed`);
+      if (i < retries - 1) await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  console.error("❌ Prisma failed after all retries");
+}
+
+/**
+ * ==============================
  * START SERVER
  * ==============================
  */
@@ -182,12 +201,7 @@ const port = Number(process.env.PORT || 4000);
 app.listen(port, async () => {
   console.log(`🚀 API listening on :${port}`);
   console.log("[CORS] FRONTEND_ORIGIN =", envOrigins.join(", ") || "(vazio)");
-  try {
-    await prisma.$connect();
-    console.log("✅ Prisma connected successfully");
-  } catch (e) {
-    console.error("❌ prisma connect failed on boot:", e);
-  }
+  await connectWithRetry();
 });
 
 /**
