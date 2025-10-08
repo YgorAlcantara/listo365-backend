@@ -97,7 +97,7 @@ app.get("/health", async (_req, res) => {
 
 /**
  * ==============================
- * READINESS (com seed opcional)
+ * READINESS (com seed opcional e fallback .ts/.js)
  * ==============================
  */
 app.get("/ready", async (req, res) => {
@@ -107,6 +107,7 @@ app.get("/ready", async (req, res) => {
       return res.status(401).json({ error: "unauthorized" });
     }
 
+    // Testa conexão com o banco
     await prisma.$queryRawUnsafe("SELECT 1");
 
     let seeded = false;
@@ -115,16 +116,25 @@ app.get("/ready", async (req, res) => {
 
     if (shouldSeed) {
       try {
-        const mod: any = await import("../prisma/seed.js");
-        const fn = mod?.runSeed || mod?.default || mod?.main;
-        if (typeof fn === "function") {
-          await fn();
-          seeded = true;
-        } else {
-          console.warn("⚠️ Seed module loaded but no run function found");
+        // tenta primeiro o build compilado (.js)
+        let seedModule: any;
+        try {
+          seedModule = await import("../prisma/seed.js");
+        } catch {
+          // fallback para rodar localmente (usando ts-node/dev)
+          seedModule = await import("../prisma/seed.ts");
         }
-      } catch (e) {
-        console.error("❌ seed failed in /ready:", e);
+
+        const runSeed = seedModule?.runSeed || seedModule?.default || seedModule?.main;
+        if (typeof runSeed === "function") {
+          await runSeed();
+          seeded = true;
+          console.log("✅ Database seeded successfully");
+        } else {
+          console.warn("⚠️ Seed module loaded, but no valid export found");
+        }
+      } catch (err) {
+        console.error("❌ Seed failed in /ready:", err);
         return res
           .status(500)
           .json({ ok: false, db: true, seeded: false, error: "seed_failed" });
@@ -132,8 +142,8 @@ app.get("/ready", async (req, res) => {
     }
 
     return res.json({ ok: true, db: true, seeded });
-  } catch (e) {
-    console.error("ready failed", e);
+  } catch (err) {
+    console.error("ready failed", err);
     return res.status(500).json({ ok: false, error: "ready_failed" });
   }
 });
